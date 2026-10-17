@@ -23,6 +23,21 @@ const COLORS = [
 ];
 const SHEET_QUERY = "(max-width: 1024px)"; // ниже этой ширины панель — выезжающий снизу лист
 const PHONE_QUERY = "(max-width: 640px)"; // на телефонах события в ячейках — цветные точки
+const SMALL_QUERY = "(max-width: 768px)"; // на малых экранах время выбирается в окне, а не вводится вручную
+
+// поля времени события (используются и в создании, и в раскрытом событии)
+const TIME_FIELDS = [
+  { key: "time", label: "Начало" },
+  { key: "endTime", label: "Конец" },
+];
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
+
+// рабочий диапазон дня, в котором ищем свободные окна
+const DAY_START = "08:00";
+const DAY_END = "22:00";
+const DEFAULT_DURATION = 60; // минут: длительность события без времени конца
+const MIN_WINDOW = 30; // окна короче этого не показываем
 
 const props = defineProps({
   // true — календарь занимает ровно весь экран, страница не скроллится.
@@ -38,6 +53,11 @@ const fromKey = (key) => {
   const [y, m, d] = key.split("-").map(Number);
   return new Date(y, m - 1, d);
 };
+
+function minutesNow() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
 
 const monthFmt = new Intl.DateTimeFormat("ru-RU", { month: "long" });
 const dayFmt = new Intl.DateTimeFormat("ru-RU", {
@@ -68,14 +88,28 @@ const panelKey = ref(null); // какой день показан в панел�
 
 const events = reactive({}); // { 'YYYY-MM-DD': [{ id, title, time, color, done }] }
 
-const form = reactive({ title: "", time: "", color: COLORS[0].value });
+const emptyForm = () => ({
+  title: "",
+  time: "",
+  endTime: "",
+  location: "",
+  attendees: "",
+  link: "",
+  notes: "",
+  color: COLORS[0].value,
+});
+const form = reactive(emptyForm()); // черновик нового события
+const creating = ref(false); // открыта форма нового события со всеми полями
 const titleInput = ref(null);
 const scrollEl = ref(null);
 const expandedId = ref(null); // раскрытое событие в панели
 const isSheet = ref(false);
 const isPhone = ref(false);
+const isSmall = ref(false);
 const gridEl = ref(null);
 const rowH = ref(136); // реальная высота одной недели, измеряется ResizeObserver
+const colW = ref(188); // реальная ширина одного дня
+const nowMin = ref(minutesNow()); // текущее время в минутах от полуночи, обновляется раз в полминуты
 
 /* ---------- загрузка / сохранение ---------- */
 function seedDemo() {
@@ -126,9 +160,12 @@ function seedDemo() {
 
 let mq = null;
 let phoneMq = null;
+let smallMq = null;
 let ro = null;
+let timer = null;
 const onMq = (e) => (isSheet.value = e.matches);
 const onPhoneMq = (e) => (isPhone.value = e.matches);
+const onSmallMq = (e) => (isSmall.value = e.matches);
 
 onMounted(() => {
   try {
@@ -163,18 +200,25 @@ onMounted(() => {
   phoneMq = window.matchMedia(PHONE_QUERY);
   isPhone.value = phoneMq.matches;
   phoneMq.addEventListener("change", onPhoneMq);
+  smallMq = window.matchMedia(SMALL_QUERY);
+  isSmall.value = smallMq.matches;
+  smallMq.addEventListener("change", onSmallMq);
   if (gridEl.value && "ResizeObserver" in window) {
-    ro = new ResizeObserver(
-      ([entry]) => (rowH.value = entry.contentRect.height / 6)
-    );
+    ro = new ResizeObserver(([entry]) => {
+      rowH.value = entry.contentRect.height / 6;
+      colW.value = entry.contentRect.width / 7;
+    });
     ro.observe(gridEl.value);
   }
   window.addEventListener("keydown", onKeydown);
+  timer = setInterval(() => (nowMin.value = minutesNow()), 30000);
 });
 onBeforeUnmount(() => {
   mq?.removeEventListener("change", onMq);
   phoneMq?.removeEventListener("change", onPhoneMq);
+  smallMq?.removeEventListener("change", onSmallMq);
   ro?.disconnect();
+  clearInterval(timer);
   window.removeEventListener("keydown", onKeydown);
   setScrollLock(false);
 });
@@ -221,33 +265,125 @@ function sortedEvents(key) {
   });
 }
 
-// Сколько событий помещается в ячейке при текущей высоте недели — остальные сворачиваются в «ещё N»
+/* ---------- текущая и следующая запись (только для сегодняшнего дня) ---------- */
+const endMin = (e) => {
+  const s = toMin(e.time);
+  return e.endTime && toMin(e.endTime) > s
+    ? toMin(e.endTime)
+    : s + DEFAULT_DURATION;
+};
+const untilLabel = (m) => durationLabel(Math.max(1, m));
+// cur — событие, которое идёт сейчас; next — ближайшее следующее. Выполненные и «весь день» не учитываются.
+const live = computed(() => {
+  const n = nowMin.value;
+  const timed = (events[todayKey] ?? [])
+    .filter((e) => e.time && !e.done)
+    .map((e) => ({ e, s: toMin(e.time), end: endMin(e) }))
+    .sort((a, b) => a.s - b.s);
+  const cur = timed.find((x) => x.s <= n && n < x.end) ?? null;
+  const next = timed.find((x) => x.s > n) ?? null;
+  return {
+    cur: cur?.e ?? null,
+    next: next?.e ?? null,
+    currentId: cur?.e.id ?? null,
+    nextId: next?.e.id ?? null,
+    untilEnd: cur ? cur.end - n : 0,
+    untilNext: next ? next.s - n : 0,
+  };
+});
+
+// Размеры элементов в ячейке (px) — для расчёта, сколько всего помещается
+const CHIP_STEP = 23.2; // строка события вместе с промежутком
+// Три плотности плашек со свободными окнами: обычная «08:00–10:00», компактная и мини (только начало).
+// Если окна не влезают в ячейку, берётся следующая, более плотная плотность.
+const FWIN_TIERS = [
+  { id: "full", w: 84, step: 22 },
+  { id: "compact", w: 70, step: 17 },
+  { id: "mini", w: 30, step: 15 },
+];
+
+// Что показывать в ячейке: свободные окна ВСЕ (переносятся по несколько в ряд, при нехватке места становятся компактнее),
+// события — в оставшемся месте, остальные сворачиваются в «ещё N». Если окна не влезают даже в мини-виде — последняя плашка «+N».
 const dayViews = computed(() => {
   const map = {};
   for (const c of cells.value) {
     const list = sortedEvents(c.key);
     const total = list.length;
+    const freeAll = !c.outside && c.key >= todayKey ? windowsFor(c.key) : [];
+    const phone = isPhone.value;
+    // на телефоне события — точки в одну строку; на широком экране — строки
+    const avail = phone ? rowH.value - 39 - (total ? 10 : 0) : rowH.value - 48;
+    // сегодня место под текущее и следующее событие резервируется раньше свободных окон
+    const reserve =
+      !phone && c.key === todayKey
+        ? [live.value.currentId, live.value.nextId].filter(Boolean).length
+        : 0;
+    const availFree =
+      avail -
+      (reserve ? reserve * CHIP_STEP + (total > reserve ? 19.2 : 0) : 0);
+    const innerW = phone ? colW.value - 5 : colW.value - 17;
+    const tiers = phone ? [FWIN_TIERS[2]] : FWIN_TIERS;
+    let tier = tiers[tiers.length - 1];
+    let perRow = 1;
+    let free = freeAll;
+    if (freeAll.length) {
+      let found = false;
+      for (const t of tiers) {
+        const pr = Math.max(1, Math.floor((innerW + 3) / (t.w + 3)));
+        const slots = Math.max(0, Math.floor((availFree + 3) / t.step)) * pr;
+        tier = t;
+        perRow = pr;
+        if (slots >= freeAll.length) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // даже в самом плотном виде не влезает — обрезаем, последнее место занимает «+N»
+        const slots =
+          Math.max(0, Math.floor((availFree + 3) / tier.step)) * perRow;
+        free =
+          slots === 0
+            ? []
+            : [
+                ...freeAll.slice(0, slots - 1),
+                {
+                  more: true,
+                  start: "more",
+                  label: `+${freeAll.length - slots + 1}`,
+                },
+              ];
+      }
+    }
     let limit;
-    if (isPhone.value) {
+    if (phone) {
       limit = 3;
     } else {
-      const avail = rowH.value - 48; // минус отступы и число дня
-      const fitAll = Math.floor((avail + 3) / 23.2);
+      const freeLines = Math.ceil(free.length / perRow);
+      const availEv = avail - freeLines * tier.step; // остальное место — событиям
+      const fitAll = Math.floor((availEv + 3) / CHIP_STEP);
       limit =
         total <= fitAll
           ? total
-          : Math.max(0, Math.floor((avail - 19.2 + 3) / 23.2));
+          : Math.max(0, Math.floor((availEv - 19.2 + 3) / CHIP_STEP));
     }
+    if (reserve) limit = Math.max(limit, reserve);
     limit = Math.min(limit, total);
     const rest = total - limit;
     let more = "";
     if (rest > 0)
-      more = isPhone.value
-        ? `+${rest}`
-        : limit > 0
-        ? `ещё ${rest}`
-        : eventsWord(rest);
-    map[c.key] = { shown: list.slice(0, limit), more };
+      more = phone ? `+${rest}` : limit > 0 ? `ещё ${rest}` : eventsWord(rest);
+    // сегодня текущее и следующее событие всегда остаются видимыми, даже если ячейка свёрнута в «ещё N»
+    let shown = list.slice(0, limit);
+    if (c.key === todayKey && limit < total) {
+      const must = [live.value.currentId, live.value.nextId]
+        .filter(Boolean)
+        .slice(0, limit);
+      const picked = new Set(must);
+      for (const e of list) if (picked.size < limit) picked.add(e.id);
+      shown = list.filter((e) => picked.has(e.id));
+    }
+    map[c.key] = { shown, more, free, freeTier: tier.id };
   }
   return map;
 });
@@ -281,6 +417,84 @@ const panelEvents = computed(() =>
   panelKey.value ? sortedEvents(panelKey.value) : []
 );
 
+/* ---------- свободные окна ---------- */
+const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+const fmtMin = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+function durationLabel(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return [h ? `${h} ч` : "", m ? `${m} мин` : ""].filter(Boolean).join(" ");
+}
+
+// свободные окна любого дня: [{ start, end, len }]
+function windowsFor(key) {
+  const dayStart = toMin(DAY_START);
+  const dayEnd = toMin(DAY_END);
+  const busy = (events[key] ?? [])
+    .filter((e) => e.time) // события «весь день» время не занимают
+    .map((e) => {
+      const s = toMin(e.time);
+      const end =
+        e.endTime && toMin(e.endTime) > s
+          ? toMin(e.endTime)
+          : s + DEFAULT_DURATION;
+      return [s, end];
+    })
+    .sort((a, b) => a[0] - b[0]);
+
+  const res = [];
+  let cursor = dayStart;
+  const push = (from, to) => {
+    if (to - from >= MIN_WINDOW)
+      res.push({
+        start: fmtMin(from),
+        end: fmtMin(to),
+        len: durationLabel(to - from),
+      });
+  };
+  for (const [s, e] of busy) {
+    if (cursor >= dayEnd) break;
+    push(cursor, Math.min(s, dayEnd));
+    cursor = Math.max(cursor, e);
+  }
+  if (cursor < dayEnd) push(cursor, dayEnd);
+  return res;
+}
+const freeWindows = computed(() =>
+  panelKey.value ? windowsFor(panelKey.value) : []
+);
+
+// клик по свободному окну — новая запись с временем этого окна
+function createInWindow(w) {
+  startCreate();
+  form.time = w.start;
+  form.endTime = w.end;
+}
+
+// клик по свободному окну в ячейке календаря — открыть день и сразу форму нового события
+function openFreeWindow(key, w) {
+  if (selectedKey.value !== key) openDay(key);
+  createInWindow(w);
+}
+
+function onFreeClick(e, key, w) {
+  if (w.more) return; // «+N» — клик уходит в ячейку и открывает день
+  e.stopPropagation();
+  openFreeWindow(key, w);
+}
+
+// клик по событию в ячейке календаря — открыть день и раскрыть это событие
+function openEvent(key, id) {
+  if (selectedKey.value !== key) openDay(key);
+  else resetForm();
+  expandedId.value = id;
+  setTimeout(() => {
+    scrollEl.value
+      ?.querySelector(`[data-id="${id}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, 350); // ждём конца анимации открытия панели
+}
+
 function openDay(key) {
   if (selectedKey.value === key) {
     closeDay();
@@ -300,31 +514,37 @@ function closeDay() {
   selectedKey.value = null;
 }
 function resetForm() {
-  form.title = "";
-  form.time = "";
-  form.color = COLORS[0].value;
+  Object.assign(form, emptyForm());
+  creating.value = false;
+}
+function startCreate() {
+  expandedId.value = null;
+  creating.value = true;
+  if (!isSheet.value)
+    nextTick(() => titleInput.value?.focus({ preventScroll: true }));
+}
+function cancelCreate() {
+  resetForm();
 }
 
 function addEvent() {
   const title = form.title.trim();
   const key = panelKey.value;
-  if (!title || !key) return;
+  if (!title || !key || formEndError.value) return;
   if (!events[key]) events[key] = [];
   events[key].push({
     id: crypto.randomUUID(),
     title,
     time: form.time,
-    endTime: "",
-    location: "",
-    attendees: "",
-    link: "",
-    notes: "",
+    endTime: form.endTime,
+    location: form.location.trim(),
+    attendees: form.attendees.trim(),
+    link: form.link.trim(),
+    notes: form.notes.trim(),
     color: form.color,
     done: false,
   });
-  form.title = "";
-  form.time = "";
-  if (!isSheet.value) nextTick(() => titleInput.value?.focus());
+  resetForm();
 }
 function removeEvent(id) {
   const key = panelKey.value;
@@ -351,6 +571,7 @@ function toggleExpand(id) {
 }
 const endBeforeStart = (ev) =>
   Boolean(ev.time && ev.endTime && ev.endTime < ev.time);
+const formEndError = computed(() => endBeforeStart(form));
 function timeRange(ev) {
   if (!ev.time) return "Весь день";
   return ev.endTime && !endBeforeStart(ev)
@@ -376,18 +597,71 @@ function safeHref(raw) {
 
 function onKeydown(e) {
   if (e.key !== "Escape") return;
-  if (expandedId.value) expandedId.value = null;
+  if (picker.open) closePicker();
+  else if (expandedId.value) expandedId.value = null;
+  else if (creating.value) cancelCreate();
   else if (isOpen.value) closeDay();
 }
 
+/* ---------- выбор времени (малые экраны) ---------- */
+const picker = reactive({ open: false, label: "", hh: 9, mm: 0 });
+const pickerEl = ref(null);
+const pickerPreview = computed(() => `${pad(picker.hh)}:${pad(picker.mm)}`);
+let pickerTarget = null;
+let pickerKey = "";
+let pickerReturn = null;
+
+function openPicker(target, field, e) {
+  pickerTarget = target;
+  pickerKey = field.key;
+  pickerReturn = e?.currentTarget ?? null;
+  const v = target[field.key];
+  if (v) {
+    picker.hh = Number(v.slice(0, 2));
+    picker.mm = Number(v.slice(3, 5));
+  } else if (field.key === "endTime" && target.time) {
+    // конец по умолчанию — через час после начала
+    picker.hh = Math.min(23, Number(target.time.slice(0, 2)) + 1);
+    picker.mm = Number(target.time.slice(3, 5));
+  } else {
+    picker.hh = 9;
+    picker.mm = 0;
+  }
+  picker.label = field.label;
+  picker.open = true;
+  nextTick(() => pickerEl.value?.focus({ preventScroll: true }));
+}
+function closePicker() {
+  picker.open = false;
+  nextTick(() => pickerReturn?.focus?.({ preventScroll: true }));
+}
+function applyPicker() {
+  if (pickerTarget) pickerTarget[pickerKey] = pickerPreview.value;
+  closePicker();
+}
+function clearPicker() {
+  if (pickerTarget) pickerTarget[pickerKey] = "";
+  closePicker();
+}
+// Tab не уходит из окна выбора
+function onPickerKeydown(e) {
+  if (e.key !== "Tab" || !pickerEl.value) return;
+  const items = [...pickerEl.value.querySelectorAll("button:not([disabled])")];
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || active === pickerEl.value)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 watch(selectedKey, (val) => {
-  if (!val) return;
-  panelKey.value = val;
-  // на телефонах не открываем клавиатуру автоматически
-  if (!isSheet.value)
-    nextTick(() =>
-      setTimeout(() => titleInput.value?.focus({ preventScroll: true }), 320)
-    );
+  if (val) panelKey.value = val;
 });
 
 /* ---------- блокировка прокрутки страницы ---------- */
@@ -503,8 +777,20 @@ watch(
               v-for="ev in dayViews[cell.key].shown"
               :key="ev.id"
               class="chip"
-              :class="{ 'chip--done': ev.done }"
+              :class="{
+                'chip--done': ev.done,
+                'chip--current': ev.id === live.currentId,
+                'chip--next': ev.id === live.nextId,
+              }"
               :style="{ '--c': ev.color }"
+              :title="
+                ev.id === live.currentId
+                  ? `Сейчас: ${ev.title}`
+                  : ev.id === live.nextId
+                  ? `Далее: ${ev.title}`
+                  : ev.title
+              "
+              @click.stop="openEvent(cell.key, ev.id)"
             >
               <b v-if="ev.time">{{ ev.time }}</b>
               <span>{{ ev.title }}</span>
@@ -512,6 +798,32 @@ watch(
             <span v-if="dayViews[cell.key].more" class="day__more">{{
               dayViews[cell.key].more
             }}</span>
+            <span
+              v-if="dayViews[cell.key].free.length"
+              class="day__free"
+              :class="`day__free--${dayViews[cell.key].freeTier}`"
+            >
+              <span
+                v-for="w in dayViews[cell.key].free"
+                :key="w.start"
+                class="fwin"
+                :class="{ 'fwin--more': w.more }"
+                :title="
+                  w.more
+                    ? 'Остальные окна — в панели дня'
+                    : `Свободно ${w.len} — создать событие`
+                "
+                @click="onFreeClick($event, cell.key, w)"
+              >
+                {{
+                  w.more
+                    ? w.label
+                    : dayViews[cell.key].freeTier === "mini"
+                    ? w.start
+                    : `${w.start}–${w.end}`
+                }}
+              </span>
+            </span>
           </span>
         </button>
       </div>
@@ -528,7 +840,7 @@ watch(
       :aria-modal="isSheet && isOpen ? 'true' : undefined"
       :inert="isOpen ? undefined : ''"
     >
-      <div v-if="panelKey" class="side">
+      <div v-if="panelKey" class="side" :class="{ 'side--creating': creating }">
         <header class="side__head">
           <div>
             <p class="side__weekday">{{ panelWeekday }}</p>
@@ -561,6 +873,57 @@ watch(
 
         <!-- прокручивается только список -->
         <div ref="scrollEl" class="side__scroll">
+          <!-- сегодня: что идёт сейчас и что дальше -->
+          <section
+            v-if="panelKey === todayKey && panelEvents.length"
+            class="now"
+            aria-label="Сейчас и далее"
+          >
+            <button
+              v-if="live.cur"
+              class="now__card now__card--current"
+              type="button"
+              :style="{ '--c': live.cur.color }"
+              @click="toggleExpand(live.cur.id)"
+            >
+              <span class="now__label"
+                ><span class="now__dot" aria-hidden="true"></span>Сейчас</span
+              >
+              <span class="now__title">{{ live.cur.title }}</span>
+              <span class="now__meta"
+                >{{ timeRange(live.cur) }} · осталось
+                {{ untilLabel(live.untilEnd) }}</span
+              >
+            </button>
+            <div v-else class="now__card now__card--empty">
+              <span class="now__label">Сейчас</span>
+              <span class="now__meta">Событий нет</span>
+            </div>
+
+            <button
+              v-if="live.next"
+              class="now__card"
+              type="button"
+              :style="{ '--c': live.next.color }"
+              @click="toggleExpand(live.next.id)"
+            >
+              <span class="now__label">Далее</span>
+              <span class="now__title">{{ live.next.title }}</span>
+              <span class="now__meta"
+                >{{ timeRange(live.next) }} · через
+                {{ untilLabel(live.untilNext) }}</span
+              >
+            </button>
+            <div v-else class="now__card now__card--empty">
+              <span class="now__label">Далее</span>
+              <span class="now__meta">Больше событий сегодня нет</span>
+            </div>
+
+            <div class="now__divider" aria-hidden="true">
+              <span>Все события дня</span>
+            </div>
+          </section>
+
           <ul v-if="panelEvents.length" class="list">
             <li
               v-for="ev in panelEvents"
@@ -570,6 +933,7 @@ watch(
               :class="{
                 'item--done': ev.done,
                 'item--open': expandedId === ev.id,
+                'item--current': ev.id === live.currentId,
               }"
               :style="{ '--c': ev.color }"
             >
@@ -594,6 +958,16 @@ watch(
                   <span class="item__text">
                     <span class="item__title">{{ ev.title }}</span>
                     <span class="item__meta">
+                      <span
+                        v-if="ev.id === live.currentId"
+                        class="badge badge--now"
+                        >Сейчас</span
+                      >
+                      <span
+                        v-else-if="ev.id === live.nextId"
+                        class="badge badge--next"
+                        >Далее</span
+                      >
                       <span class="item__time">{{ timeRange(ev) }}</span>
                       <span v-if="ev.location" class="item__loc">{{
                         ev.location
@@ -662,16 +1036,56 @@ watch(
                     </label>
 
                     <div class="details__pair">
-                      <label class="field">
-                        <span>Начало</span>
-                        <input v-model="ev.time" type="time" />
-                      </label>
-                      <label class="field">
-                        <span>Конец</span>
+                      <label
+                        v-for="f in TIME_FIELDS"
+                        :key="f.key"
+                        class="field"
+                      >
+                        <span>{{ f.label }}</span>
+                        <button
+                          v-if="isSmall"
+                          type="button"
+                          class="timebtn"
+                          :class="{ 'timebtn--empty': !ev[f.key] }"
+                          :aria-label="`${f.label}: ${
+                            ev[f.key] || 'не задано'
+                          }`"
+                          @click="openPicker(ev, f, $event)"
+                        >
+                          <span>{{ ev[f.key] || "Выбрать" }}</span>
+                          <svg
+                            viewBox="0 0 20 20"
+                            width="20"
+                            height="20"
+                            aria-hidden="true"
+                          >
+                            <circle
+                              cx="10"
+                              cy="10"
+                              r="7.25"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.7"
+                            />
+                            <path
+                              d="M10 5.8V10l2.8 1.8"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.7"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            />
+                          </svg>
+                        </button>
                         <input
-                          v-model="ev.endTime"
+                          v-else
+                          v-model="ev[f.key]"
                           type="time"
-                          :min="ev.time || undefined"
+                          :min="
+                            f.key === 'endTime'
+                              ? ev.time || undefined
+                              : undefined
+                          "
                         />
                       </label>
                     </div>
@@ -775,67 +1189,274 @@ watch(
           <p v-else class="empty">
             На этот день ничего не запланировано. Добавьте первое событие ниже.
           </p>
+
+          <!-- свободные окна: клик создаёт событие на это время -->
+          <section class="free" aria-label="Свободное время">
+            <h4 class="free__title">Свободное время</h4>
+            <ul v-if="freeWindows.length" class="free__list">
+              <li v-for="w in freeWindows" :key="w.start">
+                <button
+                  class="free__btn"
+                  type="button"
+                  @click="createInWindow(w)"
+                >
+                  <span class="free__range">{{ w.start }}–{{ w.end }}</span>
+                  <span class="free__len">{{ w.len }}</span>
+                  <svg
+                    viewBox="0 0 20 20"
+                    width="16"
+                    height="16"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M10 4.5v11M4.5 10h11"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </button>
+              </li>
+            </ul>
+            <p v-else class="free__none">Свободных окон нет</p>
+          </section>
         </div>
 
-        <!-- форма всегда прижата к низу и целиком видна -->
-        <div
-          class="form-wrap"
-          :class="{ 'form-wrap--hidden': expandedId !== null }"
-          :inert="expandedId !== null ? '' : undefined"
-        >
-          <form class="form" @submit.prevent="addEvent">
-            <label class="field">
-              <span>Название</span>
+        <!-- создание события: все поля сразу -->
+        <form v-if="creating" class="create" @submit.prevent="addEvent">
+          <h4 class="create__title">Новое событие</h4>
+
+          <label class="field">
+            <span>Название</span>
+            <input
+              ref="titleInput"
+              v-model="form.title"
+              type="text"
+              maxlength="80"
+              placeholder="Например, встреча с клиентом"
+              autocomplete="off"
+              enterkeyhint="done"
+            />
+          </label>
+
+          <div class="details__pair">
+            <label v-for="f in TIME_FIELDS" :key="f.key" class="field">
+              <span>{{ f.label }}</span>
+              <button
+                v-if="isSmall"
+                type="button"
+                class="timebtn"
+                :class="{ 'timebtn--empty': !form[f.key] }"
+                :aria-label="`${f.label}: ${form[f.key] || 'не задано'}`"
+                @click="openPicker(form, f, $event)"
+              >
+                <span>{{ form[f.key] || "Выбрать" }}</span>
+                <svg
+                  viewBox="0 0 20 20"
+                  width="20"
+                  height="20"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="10"
+                    cy="10"
+                    r="7.25"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                  />
+                  <path
+                    d="M10 5.8V10l2.8 1.8"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
               <input
-                ref="titleInput"
-                v-model="form.title"
-                type="text"
-                maxlength="80"
-                placeholder="Например, встреча с клиентом"
-                autocomplete="off"
-                enterkeyhint="done"
+                v-else
+                v-model="form[f.key]"
+                type="time"
+                :min="f.key === 'endTime' ? form.time || undefined : undefined"
               />
             </label>
+          </div>
+          <p v-if="formEndError" class="field-error" role="alert">
+            Конец раньше начала
+          </p>
 
-            <div class="form__row">
-              <label class="field field--time">
-                <span>Время</span>
-                <input v-model="form.time" type="time" />
+          <label class="field">
+            <span>Место</span>
+            <input
+              v-model="form.location"
+              type="text"
+              maxlength="80"
+              placeholder="Кабинет, адрес или онлайн"
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="field">
+            <span>Участники</span>
+            <input
+              v-model="form.attendees"
+              type="text"
+              maxlength="120"
+              placeholder="Имена через запятую"
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="field">
+            <span>Ссылка</span>
+            <input
+              v-model="form.link"
+              type="url"
+              inputmode="url"
+              placeholder="https://example.com"
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="field">
+            <span>Описание</span>
+            <textarea
+              v-model="form.notes"
+              rows="4"
+              maxlength="1000"
+              placeholder="Заметки, повестка, что подготовить"
+            ></textarea>
+          </label>
+
+          <fieldset class="field">
+            <legend>Цвет</legend>
+            <div class="colors">
+              <label
+                v-for="c in COLORS"
+                :key="c.id"
+                class="swatch"
+                :title="c.label"
+              >
+                <input
+                  v-model="form.color"
+                  type="radio"
+                  name="event-color"
+                  :value="c.value"
+                />
+                <span :style="{ background: c.value }"></span>
+                <span class="sr-only">{{ c.label }}</span>
               </label>
-
-              <fieldset class="field field--colors">
-                <legend>Цвет</legend>
-                <div class="colors">
-                  <label
-                    v-for="c in COLORS"
-                    :key="c.id"
-                    class="swatch"
-                    :title="c.label"
-                  >
-                    <input
-                      v-model="form.color"
-                      type="radio"
-                      name="event-color"
-                      :value="c.value"
-                    />
-                    <span :style="{ background: c.value }"></span>
-                    <span class="sr-only">{{ c.label }}</span>
-                  </label>
-                </div>
-              </fieldset>
             </div>
+          </fieldset>
 
+          <div class="create__actions">
+            <button class="btn btn--ghost" type="button" @click="cancelCreate">
+              Отмена
+            </button>
             <button
               class="btn btn--primary"
               type="submit"
-              :disabled="!form.title.trim()"
+              :disabled="!form.title.trim() || formEndError"
             >
+              Добавить
+            </button>
+          </div>
+        </form>
+
+        <!-- кнопка создания: прячется, пока открыта форма или раскрыто событие -->
+        <div
+          class="form-wrap"
+          :class="{ 'form-wrap--hidden': creating || expandedId !== null }"
+          :inert="creating || expandedId !== null ? '' : undefined"
+        >
+          <div class="form-wrap__inner">
+            <button
+              class="btn btn--primary btn--block"
+              type="button"
+              @click="startCreate"
+            >
+              <svg
+                viewBox="0 0 20 20"
+                width="18"
+                height="18"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10 4.5v11M4.5 10h11"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
               Добавить событие
             </button>
-          </form>
+          </div>
         </div>
       </div>
     </aside>
+
+    <!-- ===== Окно выбора времени (малые экраны) ===== -->
+    <div v-if="picker.open" class="picker" @click.self="closePicker">
+      <div
+        ref="pickerEl"
+        class="picker__dialog"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="`Выбор времени: ${picker.label}`"
+        tabindex="-1"
+        @keydown.esc.stop="closePicker"
+        @keydown="onPickerKeydown"
+      >
+        <p class="picker__caption">{{ picker.label }}</p>
+        <p class="picker__preview">{{ pickerPreview }}</p>
+
+        <p class="picker__caption">Часы</p>
+        <div class="picker__grid">
+          <button
+            v-for="h in HOURS"
+            :key="h"
+            type="button"
+            class="picker__opt"
+            :class="{ 'is-active': picker.hh === h }"
+            :aria-pressed="picker.hh === h"
+            @click="picker.hh = h"
+          >
+            {{ pad(h) }}
+          </button>
+        </div>
+
+        <p class="picker__caption">Минуты</p>
+        <div class="picker__grid">
+          <button
+            v-for="m in MINUTES"
+            :key="m"
+            type="button"
+            class="picker__opt"
+            :class="{ 'is-active': picker.mm === m }"
+            :aria-pressed="picker.mm === m"
+            @click="picker.mm = m"
+          >
+            {{ pad(m) }}
+          </button>
+        </div>
+
+        <div class="picker__foot">
+          <button type="button" class="btn picker__clear" @click="clearPicker">
+            Очистить
+          </button>
+          <button type="button" class="btn btn--ghost" @click="closePicker">
+            Отмена
+          </button>
+          <button type="button" class="btn btn--primary" @click="applyPicker">
+            Готово
+          </button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -1054,6 +1675,12 @@ watch(
   line-height: 1.35;
   overflow: hidden;
   white-space: nowrap;
+  cursor: pointer; /* событие в ячейке кликабельно */
+}
+@media (hover: hover) {
+  .chip:hover {
+    background: color-mix(in srgb, var(--c) 22%, white);
+  }
 }
 .chip b {
   flex: none;
@@ -1074,6 +1701,84 @@ watch(
   font-size: 12px;
   font-weight: 500;
   color: var(--ink-soft);
+}
+
+/* текущее и следующее событие в ячейке */
+.chip--next {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent);
+}
+.chip--current {
+  background: color-mix(in srgb, var(--c) 24%, white);
+  box-shadow: inset 0 0 0 1px var(--c);
+  font-weight: 600;
+}
+.chip--current::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* свободные окна в ячейке дня: переносятся по несколько в ряд */
+.day__free {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-width: 0;
+}
+.fwin {
+  display: block;
+  max-width: 100%;
+  width: 84px;
+  padding: 1px 4px;
+  border: 1px dashed var(--primary-600);
+  border-radius: 3px;
+  background: var(--primary-50);
+  color: var(--primary-700);
+  font-size: 11px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  cursor: pointer;
+}
+/* компактная и мини-плотность — когда окон много, а места мало */
+.day__free--compact .fwin {
+  width: 70px;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 12px;
+}
+.day__free--mini .fwin {
+  width: 30px;
+  padding: 0;
+  font-size: 9px;
+  line-height: 10px;
+}
+.day__free .fwin--more {
+  width: auto;
+  min-width: 28px;
+  border-style: solid;
+  border-color: var(--line);
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: inherit;
+}
+@media (hover: hover) {
+  .fwin:not(.fwin--more):hover {
+    background: color-mix(in srgb, var(--primary-600) 14%, white);
+  }
 }
 
 /* =====================  ПАНЕЛЬ ДНЯ — по умолчанию лист снизу  ===================== */
@@ -1121,7 +1826,8 @@ watch(
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  gap: 14px;
+  --side-gap: 14px;
+  gap: var(--side-gap);
   padding: 22px 18px calc(16px + env(safe-area-inset-bottom, 0px));
 }
 .side::before {
@@ -1372,38 +2078,366 @@ watch(
   color: var(--ink-soft);
 }
 
-/* ---------- форма ---------- */
+/* ---------- сейчас и далее ---------- */
+.now {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+/* разделитель между плашками «Сейчас / Далее» и общим списком */
+.now__divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.now__divider::before,
+.now__divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.now__card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--c, var(--line));
+  border-radius: 8px;
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.now__card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.now__card--current {
+  border-color: color-mix(in srgb, var(--c) 35%, var(--line));
+  border-left-color: var(--c);
+  background: color-mix(in srgb, var(--c) 10%, white);
+}
+.now__card--empty {
+  border-left-color: var(--line);
+  background: var(--muted);
+  cursor: default;
+}
+.now__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.now__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+.now__title {
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.now__meta {
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.now__card--empty .now__meta {
+  color: var(--ink-faint);
+}
+.badge {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+}
+.badge--now {
+  background: color-mix(in srgb, var(--c) 18%, white);
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 1px var(--c);
+}
+.badge--next {
+  background: var(--muted);
+  color: var(--ink-soft);
+}
+.item--current {
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--c) 25%, transparent);
+}
+
+/* ---------- свободные окна ---------- */
+.free {
+  margin-top: 16px;
+}
+.list + .free,
+.empty + .free {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.free__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.free__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.free__btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px dashed var(--primary-600);
+  border-radius: 8px;
+  background: var(--primary-50);
+  color: var(--primary-700);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.free__btn svg {
+  flex: none;
+  margin-left: auto;
+}
+.free__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .free__btn:hover {
+    background: color-mix(in srgb, var(--primary-600) 14%, white);
+  }
+}
+.free__range {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.free__len {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.free__none {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-faint);
+}
+
+/* ---------- создание события ---------- */
 .form-wrap {
   flex: none;
   display: grid;
   grid-template-rows: 1fr;
+  margin-top: 0;
   border-top: 1px solid var(--line);
   transition: grid-template-rows 0.28s cubic-bezier(0.32, 0.72, 0, 1),
-    border-color 0.28s, visibility 0s;
+    margin-top 0.28s cubic-bezier(0.32, 0.72, 0, 1), border-color 0.28s,
+    visibility 0s;
 }
 .form-wrap--hidden {
   grid-template-rows: 0fr;
+  margin-top: calc(
+    var(--side-gap, 14px) * -1
+  ); /* убираем лишний gap, когда блок свёрнут */
   border-top-color: transparent;
   visibility: hidden;
   transition: grid-template-rows 0.28s cubic-bezier(0.32, 0.72, 0, 1),
-    border-color 0.28s, visibility 0s 0.28s;
+    margin-top 0.28s cubic-bezier(0.32, 0.72, 0, 1), border-color 0.28s,
+    visibility 0s 0.28s;
 }
-.form {
+.form-wrap__inner {
   min-height: 0;
   overflow: hidden;
+  padding: 14px 4px 4px;
+  margin: 0 -4px;
+}
+.btn--block {
+  width: 100%;
+}
+
+/* форма нового события: список скрыт, форма занимает панель и прокручивается */
+.side--creating .side__scroll {
+  display: none;
+}
+.create {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px 4px 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   margin: 0 -4px;
+  padding: 2px 4px 4px;
+  animation: pop 0.22s ease-out;
 }
-.form__row {
+.create__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.create__actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  background: var(--bg);
+}
+.create__actions .btn {
+  flex: 1;
+}
+
+/* кнопка выбора времени на малых экранах */
+.timebtn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+.timebtn svg {
+  flex: none;
+  color: var(--text-3);
+}
+.timebtn--empty span {
+  color: var(--text-3);
+}
+.timebtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+/* ---------- окно выбора времени ---------- */
+.picker {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.picker__dialog {
+  width: 100%;
+  max-width: 340px;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.3);
+  outline: none;
+  animation: pop 0.18s ease-out;
+}
+.picker__caption {
+  margin: 14px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.picker__caption:first-child {
+  margin-top: 0;
+}
+.picker__preview {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--primary-600);
+}
+.picker__grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+.picker__opt {
+  height: 42px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.picker__opt.is-active {
+  border-color: var(--primary-600);
+  background: var(--primary-600);
+  color: #fff;
+  font-weight: 600;
+}
+.picker__opt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .picker__opt:not(.is-active):hover {
+    background: var(--primary-50);
+  }
+}
+.picker__foot {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px 16px;
+  gap: 8px;
+  margin-top: 18px;
 }
+.picker__clear {
+  margin-right: auto;
+  padding: 0 8px;
+  color: var(--text-2);
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -1451,11 +2485,6 @@ watch(
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: transparent;
-}
-.field--time {
-  flex: 1 1 120px;
-  min-width: 0;
-  max-width: 160px;
 }
 .colors {
   display: flex;
@@ -1626,7 +2655,7 @@ watch(
     max-height: 100vh;
     max-height: 100dvh;
     padding: 28px 24px 24px;
-    gap: 18px;
+    --side-gap: 18px;
   }
   .side::before {
     display: none;
@@ -1709,16 +2738,41 @@ watch(
   .chip span {
     display: none;
   }
+  /* на телефоне: текущее — кольцо вокруг точки, следующее — пунктирное кольцо */
+  .chip--current::before {
+    display: none;
+  }
+  .chip--current {
+    box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px var(--c);
+  }
+  .chip--next {
+    box-shadow: none;
+    outline: 1px dashed var(--c);
+    outline-offset: 1.5px;
+  }
   .day__more {
     padding: 0;
     font-size: 10px;
     line-height: 7px;
   }
+  /* свободные окна на телефоне — компактные плашки с временем начала */
+  .day__free {
+    flex: 0 0 100%;
+    justify-content: center;
+  }
+  .fwin {
+    width: 34px;
+    padding: 0;
+    font-size: 10px;
+    line-height: 12px;
+  }
+  .day__free .fwin--more {
+    width: auto;
+    min-width: 22px;
+    padding: 0 3px;
+  }
   .side {
     padding-inline: 14px;
-  }
-  .field--time {
-    max-width: none;
   }
 }
 
@@ -1737,14 +2791,18 @@ watch(
   .side {
     overflow-y: auto;
     overscroll-behavior: contain;
-    gap: 10px;
+    --side-gap: 10px;
   }
   .side__scroll {
     flex: none;
     overflow: visible;
   }
-  .form {
-    padding-top: 12px;
+  .create {
+    flex: none;
+    overflow: visible;
+  }
+  .create__actions {
+    position: static;
   }
 }
 
@@ -1756,6 +2814,11 @@ watch(
   .item__collapse,
   .item__chev,
   .form-wrap,
+  .create,
+  .picker__dialog,
+  .free__btn,
+  .chip--current::before,
+  .now__dot,
   .swatch span {
     transition: none !important;
     animation: none !important;

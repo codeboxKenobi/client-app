@@ -1,6 +1,17 @@
+<script setup>
+import BaseCalendar from "@/components/base/BaseCalendar.vue";
+</script>
+
 <template>
-  <div class="about">
-    <h1>This is an about page</h1>
-    <h1>Deploy complete OK</h1>
+  <div class="desktop">
+    <base-calendar />
   </div>
 </template>
+
+<style scoped>
+.desktop {
+  display: flex;
+  height: 100%;
+  max-height: 90%;
+}
+</style>

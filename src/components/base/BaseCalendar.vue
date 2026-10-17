@@ -8,6 +8,7 @@ import {
   onMounted,
   onBeforeUnmount,
   defineProps,
+  defineEmits,
 } from "vue";
 
 /* ---------- настройки ---------- */
@@ -44,6 +45,26 @@ const props = defineProps({
   // false — календарь занимает 100% высоты родителя (или --cal-height).
   fullscreen: { type: Boolean, default: true },
   // список сотрудников для выбора исполнителя и ассистентов (имена строками)
+  // пациенты для поиска: [{ id, name, phone }]. Новые пациенты, добавленные в календаре, приходят событием patient-add
+  patients: {
+    type: Array,
+    default: () => [
+      { id: "p1", name: "Иванова Мария Сергеевна", phone: "+7 900 111-22-33" },
+      { id: "p2", name: "Петров Алексей Иванович", phone: "+7 912 345-67-89" },
+      {
+        id: "p3",
+        name: "Сидорова Елена Викторовна",
+        phone: "+7 921 555-01-02",
+      },
+      { id: "p4", name: "Козлов Дмитрий Андреевич", phone: "+7 903 777-88-99" },
+      { id: "p5", name: "Смирнова Ольга Петровна", phone: "+7 985 222-33-44" },
+      {
+        id: "p6",
+        name: "Васильев Игорь Николаевич",
+        phone: "+7 977 101-20-30",
+      },
+    ],
+  },
   staff: {
     type: Array,
     default: () => [
@@ -56,6 +77,8 @@ const props = defineProps({
     ],
   },
 });
+
+const emit = defineEmits(["patient-add", "patient-update"]);
 
 /* ---------- утилиты дат ---------- */
 const pad = (n) => String(n).padStart(2, "0");
@@ -101,7 +124,8 @@ const panelKey = ref(null); // какой день показан в панел�
 const events = reactive({}); // { 'YYYY-MM-DD': [{ id, title, time, color, done }] }
 
 const emptyForm = () => ({
-  title: "",
+  title: "", // ФИО выбранного пациента
+  patientId: "",
   time: "",
   endTime: "",
   location: "",
@@ -132,19 +156,21 @@ function seedDemo() {
   events[shift(0)] = [
     {
       id: crypto.randomUUID(),
-      title: "Созвон с командой",
+      title: "Иванова Мария Сергеевна",
+      patientId: "p1",
       time: "11:00",
       endTime: "11:30",
-      location: "Zoom",
+      location: "каб. 101",
       performer: "Иванов А.П.",
       assistants: ["Козлова М.Н."],
-      notes: "Обсудить план на неделю и блокеры.",
+      notes: "Повторный приём.",
       color: COLORS[0].value,
       done: false,
     },
     {
       id: crypto.randomUUID(),
-      title: "Ревью pull request",
+      title: "Петров Алексей Иванович",
+      patientId: "p2",
       time: "15:30",
       color: COLORS[1].value,
       done: false,
@@ -153,7 +179,8 @@ function seedDemo() {
   events[shift(2)] = [
     {
       id: crypto.randomUUID(),
-      title: "Дедлайн по макетам",
+      title: "Сидорова Елена Викторовна",
+      patientId: "p3",
       time: "",
       color: COLORS[3].value,
       done: false,
@@ -162,7 +189,8 @@ function seedDemo() {
   events[shift(5)] = [
     {
       id: crypto.randomUUID(),
-      title: "День рождения Ани",
+      title: "Козлов Дмитрий Андреевич",
+      patientId: "p4",
       time: "19:00",
       color: COLORS[4].value,
       done: false,
@@ -213,6 +241,22 @@ onMounted(() => {
       delete ev.attendees;
       delete ev.link;
     }
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_PATIENTS) || "[]");
+    if (Array.isArray(saved))
+      addedPatients.value = saved.filter(
+        (x) => x && x.id && typeof x.name === "string"
+      );
+  } catch {
+    /* хранилище недоступно */
+  }
+  try {
+    const phones = JSON.parse(localStorage.getItem(STORAGE_PHONES) || "{}");
+    if (phones && typeof phones === "object" && !Array.isArray(phones))
+      phoneEdits.value = phones;
+  } catch {
+    /* хранилище недоступно */
   }
   mq = window.matchMedia(SHEET_QUERY);
   isSheet.value = mq.matches;
@@ -551,6 +595,7 @@ function closeDay() {
 function resetForm() {
   Object.assign(form, emptyForm());
   creating.value = false;
+  resetPatientUi();
 }
 function startCreate() {
   expandedId.value = null;
@@ -570,6 +615,7 @@ function addEvent() {
   events[key].push({
     id: crypto.randomUUID(),
     title,
+    patientId: form.patientId,
     time: form.time,
     endTime: form.endTime,
     location: form.location.trim(),
@@ -613,9 +659,208 @@ function timeRange(ev) {
     ? `${ev.time}–${ev.endTime}`
     : ev.time;
 }
-function fixTitle(ev) {
-  ev.title = ev.title.trim() || "Без названия";
+/* ---------- пациенты: поиск, выбор, добавление нового ---------- */
+const STORAGE_PATIENTS = "big-calendar-patients";
+const addedPatients = ref([]); // пациенты, добавленные в календаре (хранятся в localStorage)
+const STORAGE_PHONES = "big-calendar-patient-phones";
+const phoneEdits = ref({}); // { patientId: 'новый телефон' } — правки телефонов (хранятся в localStorage)
+const patientList = computed(() =>
+  [
+    ...props.patients,
+    ...addedPatients.value.filter(
+      (x) => !props.patients.some((p) => p.id === x.id)
+    ),
+  ].map((p) =>
+    phoneEdits.value[p.id] ? { ...p, phone: phoneEdits.value[p.id] } : p
+  )
+);
+const phoneEdit = reactive({ key: null, value: "", error: "" }); // редактирование телефона выбранного пациента
+const pat = reactive({
+  open: false,
+  key: null,
+  query: "",
+  active: 0,
+  adding: false,
+  name: "",
+  phone: "",
+  error: "",
+});
+let patTarget = null; // событие или черновик формы, для которого открыт выбор
+const norm = (v) =>
+  String(v ?? "")
+    .toLowerCase()
+    .replace(/ё/g, "е");
+const digitsOf = (v) => String(v ?? "").replace(/\D/g, "");
+const keyOf = (t) => t.id ?? "new";
+
+// поиск по ФИО (любые части слов, в любом порядке) и по цифрам телефона
+const patientMatches = computed(() => {
+  const words = norm(pat.query).split(/\s+/).filter(Boolean);
+  const digits = digitsOf(pat.query);
+  return patientList.value
+    .filter((p) => {
+      if (!words.length) return true;
+      const name = norm(p.name);
+      return (
+        words.every((w) => name.includes(w)) ||
+        (digits.length >= 2 && digitsOf(p.phone).includes(digits))
+      );
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"))
+    .slice(0, 50);
+});
+const patientOf = (t) =>
+  t.patientId
+    ? patientList.value.find((p) => p.id === t.patientId) ?? null
+    : null;
+const isPatientOpen = (t) => pat.open && pat.key === keyOf(t);
+const isAddingPatient = (t) => pat.adding && pat.key === keyOf(t);
+const isEditingPhone = (t) => phoneEdit.key === keyOf(t);
+const comboValue = (t) => (isPatientOpen(t) ? pat.query : t.title);
+
+function resetPatientUi() {
+  pat.open = false;
+  pat.adding = false;
+  pat.error = "";
+  phoneEdit.key = null;
 }
+function openPatient(t) {
+  if (isPatientOpen(t)) return;
+  patTarget = t;
+  pat.key = keyOf(t);
+  pat.query = "";
+  pat.active = 0;
+  pat.adding = false;
+  pat.error = "";
+  pat.open = true;
+}
+function closePatient() {
+  pat.open = false;
+}
+function onPatientInput(t, e) {
+  if (!isPatientOpen(t)) openPatient(t);
+  pat.query = e.target.value;
+  pat.active = 0;
+}
+function scrollActive() {
+  nextTick(() =>
+    document
+      .getElementById(`pat-opt-${pat.active}`)
+      ?.scrollIntoView({ block: "nearest" })
+  );
+}
+function onPatientKeydown(e, t) {
+  const n = patientMatches.value.length; // последняя строка (индекс n) — «Добавить нового»
+  if (e.key === "Escape" && isPatientOpen(t)) {
+    e.stopPropagation();
+    closePatient();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!isPatientOpen(t)) return openPatient(t);
+    pat.active = (pat.active + (e.key === "ArrowDown" ? 1 : n)) % (n + 1);
+    scrollActive();
+  } else if (e.key === "Enter" && isPatientOpen(t)) {
+    e.preventDefault(); // Enter не отправляет форму события, пока открыт список
+    if (pat.active < n) selectPatient(t, patientMatches.value[pat.active]);
+    else startAddPatient(t);
+  }
+}
+function selectPatient(t, p) {
+  phoneEdit.key = null;
+  t.patientId = p.id;
+  t.title = p.name; // название события — ФИО пациента
+  pat.open = false;
+  pat.adding = false;
+}
+function startAddPatient(t) {
+  patTarget = t;
+  pat.key = keyOf(t);
+  const q = pat.query.trim();
+  const onlyDigits = q && /\d/.test(q) && !/\p{L}/u.test(q);
+  pat.name = onlyDigits ? "" : q;
+  pat.phone = onlyDigits ? q : "";
+  pat.error = "";
+  pat.open = false;
+  pat.adding = true;
+  nextTick(() => document.getElementById(`newpat-name-${keyOf(t)}`)?.focus());
+}
+function cancelAddPatient() {
+  pat.adding = false;
+  pat.error = "";
+}
+// '' — телефон корректен; иначе текст ошибки. exceptId — пациент, чей номер мы сейчас меняем
+function checkPhone(phone, exceptId = null) {
+  const digits = digitsOf(phone);
+  if (digits.length < 10 || digits.length > 15)
+    return "Введите корректный номер телефона";
+  const dup = patientList.value.find(
+    (x) =>
+      x.id !== exceptId && digitsOf(x.phone).slice(-10) === digits.slice(-10)
+  );
+  return dup ? `Этот номер уже есть у пациента: ${dup.name}` : "";
+}
+function startEditPhone(t) {
+  const p = patientOf(t);
+  if (!p) return;
+  pat.open = false;
+  pat.adding = false;
+  phoneEdit.key = keyOf(t);
+  phoneEdit.value = p.phone;
+  phoneEdit.error = "";
+  nextTick(() => document.getElementById(`phone-edit-${keyOf(t)}`)?.focus());
+}
+function cancelEditPhone() {
+  phoneEdit.key = null;
+  phoneEdit.error = "";
+}
+function savePhone(t) {
+  const p = patientOf(t);
+  if (!p) return;
+  const phone = phoneEdit.value.trim().replace(/\s+/g, " ");
+  const bad = checkPhone(phone, p.id);
+  if (bad) return (phoneEdit.error = bad);
+  if (phone !== p.phone) {
+    phoneEdits.value = { ...phoneEdits.value, [p.id]: phone }; // телефон меняется у пациента во всех его событиях
+    emit("patient-update", { ...p, phone }); // родитель может сохранить изменение у себя
+  }
+  cancelEditPhone();
+}
+function savePatient() {
+  const name = pat.name.trim().replace(/\s+/g, " ");
+  const phone = pat.phone.trim().replace(/\s+/g, " ");
+  if (name.length < 2) return (pat.error = "Введите ФИО пациента");
+  const bad = checkPhone(phone);
+  if (bad) return (pat.error = bad);
+  const created = { id: crypto.randomUUID(), name, phone };
+  addedPatients.value.push(created);
+  emit("patient-add", created); // чтобы родитель мог сохранить пациента у себя (например, на сервере)
+  if (patTarget) selectPatient(patTarget, created);
+  pat.adding = false;
+  pat.error = "";
+}
+watch(
+  phoneEdits,
+  (val) => {
+    try {
+      localStorage.setItem(STORAGE_PHONES, JSON.stringify(val));
+    } catch {
+      /* хранилище недоступно — работаем в памяти */
+    }
+  },
+  { deep: true }
+);
+watch(
+  addedPatients,
+  (val) => {
+    try {
+      localStorage.setItem(STORAGE_PATIENTS, JSON.stringify(val));
+    } catch {
+      /* хранилище недоступно — работаем в памяти */
+    }
+  },
+  { deep: true }
+);
+
 /* ---------- исполнитель и ассистенты ---------- */
 // t — событие или черновик формы. Если исполнитель уже не в списке сотрудников, он остаётся в вариантах выбора.
 function performerOptions(t) {
@@ -645,6 +890,8 @@ function removeAssistant(t, name) {
 function onKeydown(e) {
   if (e.key !== "Escape") return;
   if (picker.open) closePicker();
+  else if (pat.adding) cancelAddPatient();
+  else if (phoneEdit.key) cancelEditPhone();
   else if (expandedId.value) expandedId.value = null;
   else if (creating.value) cancelCreate();
   else if (isOpen.value) closeDay();
@@ -709,7 +956,9 @@ function onPickerKeydown(e) {
 
 watch(selectedKey, (val) => {
   if (val) panelKey.value = val;
+  resetPatientUi();
 });
+watch(expandedId, () => resetPatientUi());
 
 /* ---------- блокировка прокрутки страницы ---------- */
 let locked = false;
@@ -1103,16 +1352,222 @@ watch(
               >
                 <div class="item__collapse-inner">
                   <div class="details">
-                    <label class="field">
-                      <span>Название</span>
-                      <input
-                        v-model="ev.title"
-                        type="text"
-                        maxlength="80"
-                        autocomplete="off"
-                        @blur="fixTitle(ev)"
-                      />
-                    </label>
+                    <div class="field combo">
+                      <label class="combo__label" :for="`pat-in-${ev.id}`"
+                        >Пациент</label
+                      >
+                      <div class="combo__box">
+                        <input
+                          :id="`pat-in-${ev.id}`"
+                          class="combo__input"
+                          type="text"
+                          role="combobox"
+                          autocomplete="off"
+                          aria-autocomplete="list"
+                          aria-controls="pat-list"
+                          :aria-expanded="isPatientOpen(ev) ? 'true' : 'false'"
+                          :aria-activedescendant="
+                            isPatientOpen(ev)
+                              ? `pat-opt-${pat.active}`
+                              : undefined
+                          "
+                          :value="comboValue(ev)"
+                          :placeholder="
+                            isPatientOpen(ev) && ev.title
+                              ? ev.title
+                              : 'Фамилия, имя или телефон'
+                          "
+                          @focus="openPatient(ev)"
+                          @click="openPatient(ev)"
+                          @input="onPatientInput(ev, $event)"
+                          @keydown="onPatientKeydown($event, ev)"
+                          @blur="closePatient"
+                        />
+                        <svg
+                          viewBox="0 0 20 20"
+                          width="18"
+                          height="18"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="m5 7.5 5 5 5-5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </div>
+                      <div
+                        v-if="
+                          patientOf(ev) &&
+                          !isPatientOpen(ev) &&
+                          !isAddingPatient(ev)
+                        "
+                        class="combo__phone"
+                      >
+                        <template v-if="!isEditingPhone(ev)">
+                          <span>Телефон: {{ patientOf(ev).phone }}</span>
+                          <button
+                            class="linkbtn"
+                            type="button"
+                            :aria-label="`Изменить телефон: ${
+                              patientOf(ev).name
+                            }`"
+                            @click="startEditPhone(ev)"
+                          >
+                            Изменить
+                          </button>
+                        </template>
+                        <div
+                          v-else
+                          class="newpat phoneedit"
+                          role="group"
+                          aria-label="Изменение телефона"
+                        >
+                          <label class="field">
+                            <span>Номер телефона</span>
+                            <input
+                              :id="`phone-edit-${ev.id}`"
+                              v-model="phoneEdit.value"
+                              type="tel"
+                              inputmode="tel"
+                              maxlength="24"
+                              autocomplete="off"
+                              placeholder="+7 900 000-00-00"
+                              @keydown.enter.prevent="savePhone(ev)"
+                            />
+                          </label>
+                          <p
+                            v-if="phoneEdit.error"
+                            class="field-error"
+                            role="alert"
+                          >
+                            {{ phoneEdit.error }}
+                          </p>
+                          <div class="newpat__actions">
+                            <button
+                              class="btn btn--ghost"
+                              type="button"
+                              @click="cancelEditPhone"
+                            >
+                              Отмена
+                            </button>
+                            <button
+                              class="btn btn--primary"
+                              type="button"
+                              @click="savePhone(ev)"
+                            >
+                              Сохранить
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      <ul
+                        v-if="isPatientOpen(ev)"
+                        id="pat-list"
+                        class="combo__list"
+                        role="listbox"
+                        aria-label="Пациенты"
+                      >
+                        <li
+                          v-for="(p, i) in patientMatches"
+                          :key="p.id"
+                          :id="`pat-opt-${i}`"
+                          class="combo__opt"
+                          :class="{
+                            'is-active': i === pat.active,
+                            'is-selected': p.id === ev.patientId,
+                          }"
+                          role="option"
+                          :aria-selected="p.id === ev.patientId"
+                          @mousedown.prevent
+                          @click="selectPatient(ev, p)"
+                        >
+                          <span class="combo__name">{{ p.name }}</span>
+                          <span class="combo__tel">{{ p.phone }}</span>
+                        </li>
+                        <li
+                          v-if="!patientMatches.length"
+                          class="combo__empty"
+                          role="presentation"
+                        >
+                          Пациент не найден
+                        </li>
+                        <li
+                          :id="`pat-opt-${patientMatches.length}`"
+                          class="combo__opt combo__opt--add"
+                          :class="{
+                            'is-active': pat.active === patientMatches.length,
+                          }"
+                          role="option"
+                          aria-selected="false"
+                          @mousedown.prevent
+                          @click="startAddPatient(ev)"
+                        >
+                          +
+                          {{
+                            pat.query.trim()
+                              ? `Добавить «${pat.query.trim()}» как нового пациента`
+                              : "Добавить нового пациента"
+                          }}
+                        </li>
+                      </ul>
+
+                      <div
+                        v-if="isAddingPatient(ev)"
+                        class="newpat"
+                        role="group"
+                        aria-label="Новый пациент"
+                      >
+                        <p class="newpat__title">Новый пациент</p>
+                        <label class="field">
+                          <span>ФИО</span>
+                          <input
+                            :id="`newpat-name-${ev.id}`"
+                            v-model="pat.name"
+                            type="text"
+                            maxlength="120"
+                            autocomplete="off"
+                            placeholder="Фамилия Имя Отчество"
+                            @keydown.enter.prevent="savePatient"
+                          />
+                        </label>
+                        <label class="field">
+                          <span>Номер телефона</span>
+                          <input
+                            v-model="pat.phone"
+                            type="tel"
+                            inputmode="tel"
+                            maxlength="24"
+                            autocomplete="off"
+                            placeholder="+7 900 000-00-00"
+                            @keydown.enter.prevent="savePatient"
+                          />
+                        </label>
+                        <p v-if="pat.error" class="field-error" role="alert">
+                          {{ pat.error }}
+                        </p>
+                        <div class="newpat__actions">
+                          <button
+                            class="btn btn--ghost"
+                            type="button"
+                            @click="cancelAddPatient"
+                          >
+                            Отмена
+                          </button>
+                          <button
+                            class="btn btn--primary"
+                            type="button"
+                            @click="savePatient"
+                          >
+                            Сохранить
+                          </button>
+                        </div>
+                      </div>
+                    </div>
 
                     <div class="details__pair">
                       <label
@@ -1344,18 +1799,211 @@ watch(
         <form v-if="creating" class="create" @submit.prevent="addEvent">
           <h4 class="create__title">Новое событие</h4>
 
-          <label class="field">
-            <span>Название</span>
-            <input
-              ref="titleInput"
-              v-model="form.title"
-              type="text"
-              maxlength="80"
-              placeholder="Например, встреча с клиентом"
-              autocomplete="off"
-              enterkeyhint="done"
-            />
-          </label>
+          <div class="field combo">
+            <label class="combo__label" :for="`pat-in-new`">Пациент</label>
+            <div class="combo__box">
+              <input
+                ref="titleInput"
+                :id="`pat-in-new`"
+                class="combo__input"
+                type="text"
+                role="combobox"
+                autocomplete="off"
+                aria-autocomplete="list"
+                aria-controls="pat-list"
+                :aria-expanded="isPatientOpen(form) ? 'true' : 'false'"
+                :aria-activedescendant="
+                  isPatientOpen(form) ? `pat-opt-${pat.active}` : undefined
+                "
+                :value="comboValue(form)"
+                :placeholder="
+                  isPatientOpen(form) && form.title
+                    ? form.title
+                    : 'Фамилия, имя или телефон'
+                "
+                @focus="openPatient(form)"
+                @click="openPatient(form)"
+                @input="onPatientInput(form, $event)"
+                @keydown="onPatientKeydown($event, form)"
+                @blur="closePatient"
+              />
+              <svg
+                viewBox="0 0 20 20"
+                width="18"
+                height="18"
+                aria-hidden="true"
+              >
+                <path
+                  d="m5 7.5 5 5 5-5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </div>
+            <div
+              v-if="
+                patientOf(form) &&
+                !isPatientOpen(form) &&
+                !isAddingPatient(form)
+              "
+              class="combo__phone"
+            >
+              <template v-if="!isEditingPhone(form)">
+                <span>Телефон: {{ patientOf(form).phone }}</span>
+                <button
+                  class="linkbtn"
+                  type="button"
+                  :aria-label="`Изменить телефон: ${patientOf(form).name}`"
+                  @click="startEditPhone(form)"
+                >
+                  Изменить
+                </button>
+              </template>
+              <div
+                v-else
+                class="newpat phoneedit"
+                role="group"
+                aria-label="Изменение телефона"
+              >
+                <label class="field">
+                  <span>Номер телефона</span>
+                  <input
+                    :id="`phone-edit-new`"
+                    v-model="phoneEdit.value"
+                    type="tel"
+                    inputmode="tel"
+                    maxlength="24"
+                    autocomplete="off"
+                    placeholder="+7 900 000-00-00"
+                    @keydown.enter.prevent="savePhone(form)"
+                  />
+                </label>
+                <p v-if="phoneEdit.error" class="field-error" role="alert">
+                  {{ phoneEdit.error }}
+                </p>
+                <div class="newpat__actions">
+                  <button
+                    class="btn btn--ghost"
+                    type="button"
+                    @click="cancelEditPhone"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    class="btn btn--primary"
+                    type="button"
+                    @click="savePhone(form)"
+                  >
+                    Сохранить
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <ul
+              v-if="isPatientOpen(form)"
+              id="pat-list"
+              class="combo__list"
+              role="listbox"
+              aria-label="Пациенты"
+            >
+              <li
+                v-for="(p, i) in patientMatches"
+                :key="p.id"
+                :id="`pat-opt-${i}`"
+                class="combo__opt"
+                :class="{
+                  'is-active': i === pat.active,
+                  'is-selected': p.id === form.patientId,
+                }"
+                role="option"
+                :aria-selected="p.id === form.patientId"
+                @mousedown.prevent
+                @click="selectPatient(form, p)"
+              >
+                <span class="combo__name">{{ p.name }}</span>
+                <span class="combo__tel">{{ p.phone }}</span>
+              </li>
+              <li
+                v-if="!patientMatches.length"
+                class="combo__empty"
+                role="presentation"
+              >
+                Пациент не найден
+              </li>
+              <li
+                :id="`pat-opt-${patientMatches.length}`"
+                class="combo__opt combo__opt--add"
+                :class="{ 'is-active': pat.active === patientMatches.length }"
+                role="option"
+                aria-selected="false"
+                @mousedown.prevent
+                @click="startAddPatient(form)"
+              >
+                +
+                {{
+                  pat.query.trim()
+                    ? `Добавить «${pat.query.trim()}» как нового пациента`
+                    : "Добавить нового пациента"
+                }}
+              </li>
+            </ul>
+
+            <div
+              v-if="isAddingPatient(form)"
+              class="newpat"
+              role="group"
+              aria-label="Новый пациент"
+            >
+              <p class="newpat__title">Новый пациент</p>
+              <label class="field">
+                <span>ФИО</span>
+                <input
+                  :id="`newpat-name-new`"
+                  v-model="pat.name"
+                  type="text"
+                  maxlength="120"
+                  autocomplete="off"
+                  placeholder="Фамилия Имя Отчество"
+                  @keydown.enter.prevent="savePatient"
+                />
+              </label>
+              <label class="field">
+                <span>Номер телефона</span>
+                <input
+                  v-model="pat.phone"
+                  type="tel"
+                  inputmode="tel"
+                  maxlength="24"
+                  autocomplete="off"
+                  placeholder="+7 900 000-00-00"
+                  @keydown.enter.prevent="savePatient"
+                />
+              </label>
+              <p v-if="pat.error" class="field-error" role="alert">
+                {{ pat.error }}
+              </p>
+              <div class="newpat__actions">
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  @click="cancelAddPatient"
+                >
+                  Отмена
+                </button>
+                <button
+                  class="btn btn--primary"
+                  type="button"
+                  @click="savePatient"
+                >
+                  Сохранить
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div class="details__pair">
             <label v-for="f in TIME_FIELDS" :key="f.key" class="field">
@@ -1547,7 +2195,7 @@ watch(
                   stroke-linecap="round"
                 />
               </svg>
-              Добавить запись
+              Добавить событие
             </button>
           </div>
         </div>
@@ -2633,6 +3281,7 @@ button.now__card:focus-visible {
 }
 .field input[type="text"],
 .field input[type="url"],
+.field input[type="tel"],
 .field input[type="time"],
 .field textarea {
   width: 100%;
@@ -2734,6 +3383,147 @@ button.now__card:focus-visible {
   .tag__x:hover {
     background: color-mix(in srgb, var(--primary-600) 16%, white);
   }
+}
+/* поиск пациента: список раскрывается под полем и сдвигает содержимое (не обрезается панелью) */
+.field > .combo__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.combo__box {
+  position: relative;
+}
+.combo__box svg {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  margin-top: -9px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+.field input.combo__input {
+  padding-right: 36px;
+  text-overflow: ellipsis;
+}
+.combo__phone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.phoneedit {
+  flex: 1 1 100%;
+}
+/* кнопка-ссылка «Изменить» */
+.linkbtn {
+  min-height: 32px;
+  margin: 0;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--primary-600);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.linkbtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (hover: hover) {
+  .linkbtn:hover {
+    color: var(--primary-700);
+  }
+}
+.combo__list {
+  margin: 0;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+}
+.combo__opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.combo__opt.is-active {
+  background: var(--primary-50);
+}
+.combo__opt.is-selected .combo__name {
+  font-weight: 700;
+}
+.combo__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.combo__tel {
+  flex: none;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.combo__opt--add {
+  justify-content: flex-start;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 6px 6px;
+  color: var(--primary-700);
+  font-weight: 600;
+}
+.combo__empty {
+  padding: 10px;
+  font-size: 14px;
+  color: var(--ink-faint);
+}
+@media (hover: hover) {
+  .combo__opt:hover {
+    background: var(--muted);
+  }
+  .combo__opt.is-active:hover {
+    background: var(--primary-50);
+  }
+}
+/* форма нового пациента */
+.newpat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px dashed var(--primary-600);
+  border-radius: 8px;
+  background: var(--primary-50);
+}
+.newpat__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.newpat__actions {
+  display: flex;
+  gap: 8px;
+}
+.newpat__actions .btn {
+  flex: 1;
 }
 .field input:focus-visible,
 .field textarea:focus-visible,

@@ -43,6 +43,18 @@ const props = defineProps({
   // true — календарь занимает ровно весь экран, страница не скроллится.
   // false — календарь занимает 100% высоты родителя (или --cal-height).
   fullscreen: { type: Boolean, default: true },
+  // список сотрудников для выбора исполнителя и ассистентов (имена строками)
+  staff: {
+    type: Array,
+    default: () => [
+      "Иванов А.П.",
+      "Петров С.И.",
+      "Сидорова Е.В.",
+      "Козлова М.Н.",
+      "Смирнов Д.А.",
+      "Белова О.Р.",
+    ],
+  },
 });
 
 /* ---------- утилиты дат ---------- */
@@ -93,8 +105,8 @@ const emptyForm = () => ({
   time: "",
   endTime: "",
   location: "",
-  attendees: "",
-  link: "",
+  performer: "", // исполнитель
+  assistants: [], // ассистенты (несколько)
   notes: "",
   color: COLORS[0].value,
 });
@@ -124,8 +136,8 @@ function seedDemo() {
       time: "11:00",
       endTime: "11:30",
       location: "Zoom",
-      attendees: "Аня, Игорь",
-      link: "",
+      performer: "Иванов А.П.",
+      assistants: ["Козлова М.Н."],
       notes: "Обсудить план на неделю и блокеры.",
       color: COLORS[0].value,
       done: false,
@@ -190,8 +202,16 @@ onMounted(() => {
   // у старых событий нет новых полей — добавляем пустые значения
   for (const list of Object.values(events)) {
     for (const ev of list) {
-      for (const k of ["endTime", "location", "attendees", "link", "notes"])
+      // раньше было текстовое поле «Участники»: если там имя сотрудника из списка — переносим в исполнителя
+      if (typeof ev.performer !== "string") {
+        const old = typeof ev.attendees === "string" ? ev.attendees.trim() : "";
+        ev.performer = props.staff.includes(old) ? old : "";
+      }
+      if (!Array.isArray(ev.assistants)) ev.assistants = [];
+      for (const k of ["endTime", "location", "notes"])
         if (typeof ev[k] !== "string") ev[k] = "";
+      delete ev.attendees;
+      delete ev.link;
     }
   }
   mq = window.matchMedia(SHEET_QUERY);
@@ -276,9 +296,12 @@ const endMin = (e) => {
     : s + DEFAULT_DURATION;
 };
 const untilLabel = (m) => durationLabel(Math.max(1, m));
-// кабинет и участники (например, врач) одной строкой
+// исполнитель и ассистенты одной строкой: «Иванов А.П. + Козлова М.Н.»
+const teamLabel = (ev) =>
+  [ev.performer, ...(ev.assistants ?? [])].filter(Boolean).join(" + ");
+// кабинет и команда одной строкой
 const whereLabel = (ev) =>
-  [ev.location, ev.attendees].filter(Boolean).join(" · ");
+  [ev.location, teamLabel(ev)].filter(Boolean).join(" · ");
 // current — ВСЕ записи, которые идут сейчас (в том числе параллельные у разных специалистов);
 // upcoming — ВСЕ записи на ближайшее время начала. Выполненные и «весь день» не учитываются.
 const live = computed(() => {
@@ -550,8 +573,8 @@ function addEvent() {
     time: form.time,
     endTime: form.endTime,
     location: form.location.trim(),
-    attendees: form.attendees.trim(),
-    link: form.link.trim(),
+    performer: form.performer,
+    assistants: [...form.assistants],
     notes: form.notes.trim(),
     color: form.color,
     done: false,
@@ -593,18 +616,30 @@ function timeRange(ev) {
 function fixTitle(ev) {
   ev.title = ev.title.trim() || "Без названия";
 }
-// ссылка открывается только если это http(s)
-function safeHref(raw) {
-  const v = (raw ?? "").trim();
-  if (!v) return null;
-  try {
-    const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(v) ? v : `https://${v}`);
-    return url.protocol === "http:" || url.protocol === "https:"
-      ? url.href
-      : null;
-  } catch {
-    return null;
-  }
+/* ---------- исполнитель и ассистенты ---------- */
+// t — событие или черновик формы. Если исполнитель уже не в списке сотрудников, он остаётся в вариантах выбора.
+function performerOptions(t) {
+  return t.performer && !props.staff.includes(t.performer)
+    ? [t.performer, ...props.staff]
+    : props.staff;
+}
+// ассистентом нельзя выбрать исполнителя и тех, кто уже добавлен
+function assistantChoices(t) {
+  return props.staff.filter(
+    (n) => n !== t.performer && !t.assistants.includes(n)
+  );
+}
+function setPerformer(t, name) {
+  t.performer = name;
+  t.assistants = t.assistants.filter((n) => n !== name); // исполнитель не может быть своим ассистентом
+}
+function addAssistant(t, e) {
+  const name = e.target.value;
+  if (name && !t.assistants.includes(name)) t.assistants.push(name);
+  e.target.value = ""; // селектор снова показывает «Добавить ассистента»
+}
+function removeAssistant(t, name) {
+  t.assistants = t.assistants.filter((n) => n !== name);
 }
 
 function onKeydown(e) {
@@ -1013,6 +1048,9 @@ watch(
                       <span v-if="ev.location" class="item__loc">{{
                         ev.location
                       }}</span>
+                      <span v-if="teamLabel(ev)" class="item__loc">{{
+                        teamLabel(ev)
+                      }}</span>
                     </span>
                   </span>
                   <svg
@@ -1150,34 +1188,72 @@ watch(
                     </label>
 
                     <label class="field">
-                      <span>Участники</span>
-                      <input
-                        v-model="ev.attendees"
-                        type="text"
-                        maxlength="120"
-                        placeholder="Имена через запятую"
-                        autocomplete="off"
-                      />
+                      <span>Исполнитель</span>
+                      <select
+                        :value="ev.performer"
+                        @change="setPerformer(ev, $event.target.value)"
+                      >
+                        <option value="">Не выбран</option>
+                        <option
+                          v-for="n in performerOptions(ev)"
+                          :key="n"
+                          :value="n"
+                        >
+                          {{ n }}
+                        </option>
+                      </select>
                     </label>
 
-                    <label class="field">
-                      <span>Ссылка</span>
-                      <input
-                        v-model="ev.link"
-                        type="url"
-                        inputmode="url"
-                        placeholder="https://example.com"
-                        autocomplete="off"
-                      />
-                    </label>
-                    <a
-                      v-if="safeHref(ev.link)"
-                      class="details__link"
-                      :href="safeHref(ev.link)"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      >Открыть ссылку</a
-                    >
+                    <fieldset class="field">
+                      <legend>Ассистент</legend>
+                      <ul v-if="ev.assistants.length" class="tags">
+                        <li v-for="n in ev.assistants" :key="n" class="tag">
+                          <span>{{ n }}</span>
+                          <button
+                            type="button"
+                            class="tag__x"
+                            :aria-label="`Убрать ассистента ${n}`"
+                            @click="removeAssistant(ev, n)"
+                          >
+                            <svg
+                              viewBox="0 0 20 20"
+                              width="14"
+                              height="14"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="m5 5 10 10M15 5 5 15"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                              />
+                            </svg>
+                          </button>
+                        </li>
+                      </ul>
+                      <select
+                        :value="''"
+                        aria-label="Добавить ассистента"
+                        :disabled="!assistantChoices(ev).length"
+                        @change="addAssistant(ev, $event)"
+                      >
+                        <option value="">
+                          {{
+                            assistantChoices(ev).length
+                              ? "Добавить ассистента…"
+                              : "Все сотрудники выбраны"
+                          }}
+                        </option>
+                        <option
+                          v-for="n in assistantChoices(ev)"
+                          :key="n"
+                          :value="n"
+                        >
+                          {{ n }}
+                        </option>
+                      </select>
+                    </fieldset>
 
                     <label class="field">
                       <span>Описание</span>
@@ -1341,26 +1417,64 @@ watch(
           </label>
 
           <label class="field">
-            <span>Участники</span>
-            <input
-              v-model="form.attendees"
-              type="text"
-              maxlength="120"
-              placeholder="Имена через запятую"
-              autocomplete="off"
-            />
+            <span>Исполнитель</span>
+            <select
+              :value="form.performer"
+              @change="setPerformer(form, $event.target.value)"
+            >
+              <option value="">Не выбран</option>
+              <option v-for="n in performerOptions(form)" :key="n" :value="n">
+                {{ n }}
+              </option>
+            </select>
           </label>
 
-          <label class="field">
-            <span>Ссылка</span>
-            <input
-              v-model="form.link"
-              type="url"
-              inputmode="url"
-              placeholder="https://example.com"
-              autocomplete="off"
-            />
-          </label>
+          <fieldset class="field">
+            <legend>Ассистент</legend>
+            <ul v-if="form.assistants.length" class="tags">
+              <li v-for="n in form.assistants" :key="n" class="tag">
+                <span>{{ n }}</span>
+                <button
+                  type="button"
+                  class="tag__x"
+                  :aria-label="`Убрать ассистента ${n}`"
+                  @click="removeAssistant(form, n)"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    width="14"
+                    height="14"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m5 5 10 10M15 5 5 15"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </button>
+              </li>
+            </ul>
+            <select
+              :value="''"
+              aria-label="Добавить ассистента"
+              :disabled="!assistantChoices(form).length"
+              @change="addAssistant(form, $event)"
+            >
+              <option value="">
+                {{
+                  assistantChoices(form).length
+                    ? "Добавить ассистента…"
+                    : "Все сотрудники выбраны"
+                }}
+              </option>
+              <option v-for="n in assistantChoices(form)" :key="n" :value="n">
+                {{ n }}
+              </option>
+            </select>
+          </fieldset>
 
           <label class="field">
             <span>Описание</span>
@@ -1433,7 +1547,7 @@ watch(
                   stroke-linecap="round"
                 />
               </svg>
-              Добавить событие
+              Добавить запись
             </button>
           </div>
         </div>
@@ -2543,8 +2657,87 @@ button.now__card:focus-visible {
   line-height: 1.45;
   resize: vertical;
 }
+.field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 44px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--paper);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5 7.5 5 5 5-5' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 18px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.field select:disabled {
+  color: var(--ink-faint);
+  background-color: var(--muted);
+  cursor: not-allowed;
+}
+/* выбранные ассистенты */
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 34px;
+  max-width: 100%;
+  padding: 0 4px 0 12px;
+  border: 1px solid color-mix(in srgb, var(--primary-600) 35%, var(--line));
+  border-radius: 999px;
+  background: var(--primary-50);
+  color: var(--primary-700);
+  font-size: 14px;
+  font-weight: 500;
+}
+.tag > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag__x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.tag__x:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (hover: hover) {
+  .tag__x:hover {
+    background: color-mix(in srgb, var(--primary-600) 16%, white);
+  }
+}
 .field input:focus-visible,
-.field textarea:focus-visible {
+.field textarea:focus-visible,
+.field select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: transparent;

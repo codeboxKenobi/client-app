@@ -261,7 +261,10 @@ function sortedEvents(key) {
   return [...list].sort((a, b) => {
     if (!a.time && b.time) return -1;
     if (a.time && !b.time) return 1;
-    return a.time.localeCompare(b.time);
+    return (
+      a.time.localeCompare(b.time) ||
+      (a.location || "").localeCompare(b.location || "", "ru")
+    );
   });
 }
 
@@ -273,22 +276,27 @@ const endMin = (e) => {
     : s + DEFAULT_DURATION;
 };
 const untilLabel = (m) => durationLabel(Math.max(1, m));
-// cur — событие, которое идёт сейчас; next — ближайшее следующее. Выполненные и «весь день» не учитываются.
+// кабинет и участники (например, врач) одной строкой
+const whereLabel = (ev) =>
+  [ev.location, ev.attendees].filter(Boolean).join(" · ");
+// current — ВСЕ записи, которые идут сейчас (в том числе параллельные у разных специалистов);
+// upcoming — ВСЕ записи на ближайшее время начала. Выполненные и «весь день» не учитываются.
 const live = computed(() => {
   const n = nowMin.value;
   const timed = (events[todayKey] ?? [])
     .filter((e) => e.time && !e.done)
     .map((e) => ({ e, s: toMin(e.time), end: endMin(e) }))
     .sort((a, b) => a.s - b.s);
-  const cur = timed.find((x) => x.s <= n && n < x.end) ?? null;
-  const next = timed.find((x) => x.s > n) ?? null;
+  const current = timed.filter((x) => x.s <= n && n < x.end).map((x) => x.e);
+  const future = timed.filter((x) => x.s > n);
+  const upcoming = future.length
+    ? future.filter((x) => x.s === future[0].s).map((x) => x.e)
+    : [];
   return {
-    cur: cur?.e ?? null,
-    next: next?.e ?? null,
-    currentId: cur?.e.id ?? null,
-    nextId: next?.e.id ?? null,
-    untilEnd: cur ? cur.end - n : 0,
-    untilNext: next ? next.s - n : 0,
+    current,
+    upcoming,
+    currentIds: new Set(current.map((e) => e.id)),
+    nextIds: new Set(upcoming.map((e) => e.id)),
   };
 });
 
@@ -314,10 +322,16 @@ const dayViews = computed(() => {
     // на телефоне события — точки в одну строку; на широком экране — строки
     const avail = phone ? rowH.value - 39 - (total ? 10 : 0) : rowH.value - 48;
     // сегодня место под текущее и следующее событие резервируется раньше свободных окон
-    const reserve =
-      !phone && c.key === todayKey
-        ? [live.value.currentId, live.value.nextId].filter(Boolean).length
-        : 0;
+    const liveIds =
+      c.key === todayKey
+        ? [...live.value.currentIds, ...live.value.nextIds]
+        : [];
+    const reserve = phone
+      ? 0
+      : Math.min(
+          liveIds.length,
+          Math.max(0, Math.floor((avail + 3) / CHIP_STEP))
+        );
     const availFree =
       avail -
       (reserve ? reserve * CHIP_STEP + (total > reserve ? 19.2 : 0) : 0);
@@ -376,9 +390,7 @@ const dayViews = computed(() => {
     // сегодня текущее и следующее событие всегда остаются видимыми, даже если ячейка свёрнута в «ещё N»
     let shown = list.slice(0, limit);
     if (c.key === todayKey && limit < total) {
-      const must = [live.value.currentId, live.value.nextId]
-        .filter(Boolean)
-        .slice(0, limit);
+      const must = liveIds.slice(0, limit);
       const picked = new Set(must);
       for (const e of list) if (picked.size < limit) picked.add(e.id);
       shown = list.filter((e) => picked.has(e.id));
@@ -779,16 +791,18 @@ watch(
               class="chip"
               :class="{
                 'chip--done': ev.done,
-                'chip--current': ev.id === live.currentId,
-                'chip--next': ev.id === live.nextId,
+                'chip--current': live.currentIds.has(ev.id),
+                'chip--next': live.nextIds.has(ev.id),
               }"
               :style="{ '--c': ev.color }"
               :title="
-                ev.id === live.currentId
-                  ? `Сейчас: ${ev.title}`
-                  : ev.id === live.nextId
-                  ? `Далее: ${ev.title}`
-                  : ev.title
+                (live.currentIds.has(ev.id)
+                  ? 'Сейчас: '
+                  : live.nextIds.has(ev.id)
+                  ? 'Далее: '
+                  : '') +
+                ev.title +
+                (ev.location ? ` (${ev.location})` : '')
               "
               @click.stop="openEvent(cell.key, ev.id)"
             >
@@ -879,44 +893,71 @@ watch(
             class="now"
             aria-label="Сейчас и далее"
           >
-            <button
-              v-if="live.cur"
-              class="now__card now__card--current"
-              type="button"
-              :style="{ '--c': live.cur.color }"
-              @click="toggleExpand(live.cur.id)"
-            >
-              <span class="now__label"
-                ><span class="now__dot" aria-hidden="true"></span>Сейчас</span
-              >
-              <span class="now__title">{{ live.cur.title }}</span>
-              <span class="now__meta"
-                >{{ timeRange(live.cur) }} · осталось
-                {{ untilLabel(live.untilEnd) }}</span
-              >
-            </button>
-            <div v-else class="now__card now__card--empty">
-              <span class="now__label">Сейчас</span>
-              <span class="now__meta">Событий нет</span>
+            <div class="now__group">
+              <p class="now__label">
+                <span
+                  v-if="live.current.length"
+                  class="now__dot"
+                  aria-hidden="true"
+                ></span
+                >Сейчас
+                <span v-if="live.current.length > 1" class="now__count">{{
+                  live.current.length
+                }}</span>
+              </p>
+              <template v-if="live.current.length">
+                <button
+                  v-for="ev in live.current"
+                  :key="ev.id"
+                  class="now__card now__card--current"
+                  type="button"
+                  :style="{ '--c': ev.color }"
+                  @click="toggleExpand(ev.id)"
+                >
+                  <span class="now__title">{{ ev.title }}</span>
+                  <span class="now__meta"
+                    >{{ timeRange(ev) }} · осталось
+                    {{ untilLabel(endMin(ev) - nowMin) }}</span
+                  >
+                  <span v-if="whereLabel(ev)" class="now__where">{{
+                    whereLabel(ev)
+                  }}</span>
+                </button>
+              </template>
+              <div v-else class="now__card now__card--empty">
+                <span class="now__meta">Событий нет</span>
+              </div>
             </div>
 
-            <button
-              v-if="live.next"
-              class="now__card"
-              type="button"
-              :style="{ '--c': live.next.color }"
-              @click="toggleExpand(live.next.id)"
-            >
-              <span class="now__label">Далее</span>
-              <span class="now__title">{{ live.next.title }}</span>
-              <span class="now__meta"
-                >{{ timeRange(live.next) }} · через
-                {{ untilLabel(live.untilNext) }}</span
-              >
-            </button>
-            <div v-else class="now__card now__card--empty">
-              <span class="now__label">Далее</span>
-              <span class="now__meta">Больше событий сегодня нет</span>
+            <div class="now__group">
+              <p class="now__label">
+                Далее
+                <span v-if="live.upcoming.length > 1" class="now__count">{{
+                  live.upcoming.length
+                }}</span>
+              </p>
+              <template v-if="live.upcoming.length">
+                <button
+                  v-for="ev in live.upcoming"
+                  :key="ev.id"
+                  class="now__card"
+                  type="button"
+                  :style="{ '--c': ev.color }"
+                  @click="toggleExpand(ev.id)"
+                >
+                  <span class="now__title">{{ ev.title }}</span>
+                  <span class="now__meta"
+                    >{{ timeRange(ev) }} · через
+                    {{ untilLabel(toMin(ev.time) - nowMin) }}</span
+                  >
+                  <span v-if="whereLabel(ev)" class="now__where">{{
+                    whereLabel(ev)
+                  }}</span>
+                </button>
+              </template>
+              <div v-else class="now__card now__card--empty">
+                <span class="now__meta">Больше событий сегодня нет</span>
+              </div>
             </div>
 
             <div class="now__divider" aria-hidden="true">
@@ -933,7 +974,7 @@ watch(
               :class="{
                 'item--done': ev.done,
                 'item--open': expandedId === ev.id,
-                'item--current': ev.id === live.currentId,
+                'item--current': live.currentIds.has(ev.id),
               }"
               :style="{ '--c': ev.color }"
             >
@@ -959,12 +1000,12 @@ watch(
                     <span class="item__title">{{ ev.title }}</span>
                     <span class="item__meta">
                       <span
-                        v-if="ev.id === live.currentId"
+                        v-if="live.currentIds.has(ev.id)"
                         class="badge badge--now"
                         >Сейчас</span
                       >
                       <span
-                        v-else-if="ev.id === live.nextId"
+                        v-else-if="live.nextIds.has(ev.id)"
                         class="badge badge--next"
                         >Далее</span
                       >
@@ -2081,8 +2122,12 @@ watch(
 /* ---------- сейчас и далее ---------- */
 .now {
   display: grid;
-  gap: 8px;
+  gap: 14px;
   margin-bottom: 12px;
+}
+.now__group {
+  display: grid;
+  gap: 6px;
 }
 /* разделитель между плашками «Сейчас / Далее» и общим списком */
 .now__divider {
@@ -2137,6 +2182,7 @@ button.now__card:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin: 0;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -2149,6 +2195,23 @@ button.now__card:focus-visible {
   border-radius: 50%;
   background: var(--c);
   animation: pulse 1.8s ease-in-out infinite;
+}
+.now__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--ink-soft);
+}
+.now__where {
+  font-size: 13px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
 }
 .now__title {
   font-size: 15px;

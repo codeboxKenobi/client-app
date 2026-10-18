@@ -280,6 +280,7 @@ onMounted(() => {
   }
   mq = window.matchMedia(SHEET_QUERY);
   isSheet.value = mq.matches;
+  filtersOpen.value = !isSheet.value;
   mq.addEventListener("change", onMq);
   phoneMq = window.matchMedia(PHONE_QUERY);
   isPhone.value = phoneMq.matches;
@@ -341,7 +342,10 @@ const cells = computed(() => {
 });
 
 function sortedEvents(key) {
-  const list = events[key] ?? [];
+  // раскрытое событие остаётся в списке, даже если после правки перестало подходить под фильтры
+  const list = (events[key] ?? []).filter(
+    (e) => e.id === expandedId.value || matchesFilters(e)
+  );
   return [...list].sort((a, b) => {
     if (!a.time && b.time) return -1;
     if (a.time && !b.time) return 1;
@@ -371,7 +375,7 @@ const whereLabel = (ev) =>
 const live = computed(() => {
   const n = nowMin.value;
   const timed = (events[todayKey] ?? [])
-    .filter((e) => e.time && !e.done)
+    .filter((e) => e.time && !e.done && matchesFilters(e))
     .map((e) => ({ e, s: toMin(e.time), end: endMin(e) }))
     .sort((a, b) => a.s - b.s);
   const current = timed.filter((x) => x.s <= n && n < x.end).map((x) => x.e);
@@ -516,6 +520,15 @@ const panelEvents = computed(() =>
   panelKey.value ? sortedEvents(panelKey.value) : []
 );
 // прошедшие дни (до сегодняшнего) — только просмотр: ничего нельзя добавить, изменить или удалить
+const panelTotal = computed(() =>
+  panelKey.value ? (events[panelKey.value] ?? []).length : 0
+);
+const panelCountLabel = computed(() => {
+  const shown = panelEvents.value.length;
+  if (filtersActive.value && shown !== panelTotal.value)
+    return `Показано ${shown} из ${panelTotal.value} · по фильтрам`;
+  return shown ? eventsWord(shown) : "Событий нет";
+});
 const panelReadonly = computed(
   () => Boolean(panelKey.value) && panelKey.value < todayKey
 );
@@ -534,7 +547,7 @@ function windowsFor(key) {
   const dayStart = toMin(DAY_START);
   const dayEnd = toMin(DAY_END);
   const busy = (events[key] ?? [])
-    .filter((e) => e.time) // события «весь день» время не занимают
+    .filter((e) => e.time && matchesPerformer(e)) // «весь день» время не занимает; при выбранном исполнителе — его расписание
     .map((e) => {
       const s = toMin(e.time);
       const end =
@@ -627,6 +640,8 @@ function startCreate() {
   if (panelReadonly.value) return;
   expandedId.value = null;
   creating.value = true;
+  if (filters.performer && filters.performer !== "__none__")
+    form.performer = filters.performer;
   if (!isSheet.value)
     nextTick(() => titleInput.value?.focus({ preventScroll: true }));
 }
@@ -687,6 +702,54 @@ function timeRange(ev) {
     ? `${ev.time}–${ev.endTime}`
     : ev.time;
 }
+/* ---------- маска телефона: +7 (900) 000-00-00 ---------- */
+function formatPhone(v) {
+  let d = String(v ?? "").replace(/\D/g, "");
+  if (!d) return "";
+  if (d[0] === "7" || d[0] === "8") d = d.slice(1); // код страны (7 или 8) не входит в номер
+  d = d.slice(0, 10);
+  let out = "+7";
+  if (d.length) out += ` (${d.slice(0, 3)}`;
+  if (d.length > 3) out += `) ${d.slice(3, 6)}`;
+  if (d.length > 6) out += `-${d.slice(6, 8)}`;
+  if (d.length > 8) out += `-${d.slice(8, 10)}`;
+  return out;
+}
+// номер для показа: приводим к маске, если это полный российский номер; иначе как есть
+function displayPhone(v) {
+  const f = formatPhone(v);
+  return f.replace(/\D/g, "").length === 11 ? f : String(v ?? "");
+}
+// ввод в поле с маской: форматируем и сохраняем положение курсора, если правят не в конце
+function onPhoneInput(e, target, key) {
+  const el = e.target;
+  const raw = el.value;
+  const caret = el.selectionStart ?? raw.length;
+  const atEnd = caret >= raw.length;
+  const hasPrefix = /^[78]/.test(raw.replace(/\D/g, "")); // первая цифра — код страны
+  const before = Math.max(
+    0,
+    raw.slice(0, caret).replace(/\D/g, "").length - (hasPrefix ? 1 : 0)
+  );
+  const formatted = formatPhone(raw);
+  target[key] = formatted;
+  el.value = formatted;
+  if (!atEnd && document.activeElement === el) {
+    let pos = Math.min(4, formatted.length); // после «+7 (»
+    if (before > 0) {
+      pos = formatted.length;
+      let seen = -1;
+      for (let i = 0; i < formatted.length; i++) {
+        if (/\d/.test(formatted[i]) && ++seen === before) {
+          pos = i + 1;
+          break;
+        }
+      }
+    }
+    el.setSelectionRange(pos, pos);
+  }
+}
+
 /* ---------- пациенты: поиск, выбор, добавление нового ---------- */
 const STORAGE_PATIENTS = "big-calendar-patients";
 const addedPatients = ref([]); // пациенты, добавленные в календаре (хранятся в localStorage)
@@ -700,7 +763,7 @@ const patientList = computed(() =>
     ),
   ].map((p) => ({
     ...p,
-    phone: formatPhone(phoneEdits.value[p.id] || p.phone),
+    phone: displayPhone(phoneEdits.value[p.id] ?? p.phone),
   }))
 );
 const phoneEdit = reactive({ key: null, value: "", error: "" }); // редактирование телефона выбранного пациента
@@ -720,37 +783,6 @@ const norm = (v) =>
     .toLowerCase()
     .replace(/ё/g, "е");
 const digitsOf = (v) => String(v ?? "").replace(/\D/g, "");
-
-/* ---------- маска телефона: +7 (900) 000-00-00 ---------- */
-function formatPhone(value) {
-  let d = digitsOf(value);
-  if (!d) return "";
-  if (d[0] === "7" || d[0] === "8") d = d.slice(1); // код страны вводится маской
-  d = d.slice(0, 10);
-  let out = "+7";
-  if (d.length) out += " (" + d.slice(0, 3);
-  if (d.length > 3) out += ") " + d.slice(3, 6); // скобка и дефисы добавляются только вместе со следующей цифрой,
-  if (d.length > 6) out += "-" + d.slice(6, 8); // поэтому Backspace стирает цифры, а не разделители
-  if (d.length > 8) out += "-" + d.slice(8, 10);
-  return out;
-}
-// ввод в поле телефона: target[key] — значение, target.error — сообщение об ошибке
-function onMaskInput(e, target, key) {
-  const el = e.target;
-  const atEnd = el.selectionStart === el.value.length;
-  const digitsBefore = digitsOf(el.value.slice(0, el.selectionStart)).length;
-  const formatted = formatPhone(el.value);
-  el.value = formatted;
-  target[key] = formatted;
-  target.error = "";
-  if (atEnd) return;
-  // возвращаем курсор после того же количества цифр
-  let seen = 0,
-    pos = 0;
-  while (pos < formatted.length && seen < digitsBefore)
-    if (/\d/.test(formatted[pos++])) seen++;
-  el.setSelectionRange(pos, pos);
-}
 const keyOf = (t) => t.id ?? "new";
 
 // поиск по ФИО (любые части слов, в любом порядке) и по цифрам телефона
@@ -851,7 +883,8 @@ function cancelAddPatient() {
 // '' — телефон корректен; иначе текст ошибки. exceptId — пациент, чей номер мы сейчас меняем
 function checkPhone(phone, exceptId = null) {
   const digits = digitsOf(phone);
-  if (digits.length < 11) return "Введите номер полностью";
+  if (digits.length !== 11 || digits[0] !== "7")
+    return "Введите номер полностью: +7 (900) 000-00-00";
   const dup = patientList.value.find(
     (x) =>
       x.id !== exceptId && digitsOf(x.phone).slice(-10) === digits.slice(-10)
@@ -864,7 +897,7 @@ function startEditPhone(t) {
   pat.open = false;
   pat.adding = false;
   phoneEdit.key = keyOf(t);
-  phoneEdit.value = formatPhone(p.phone);
+  phoneEdit.value = formatPhone(p.phone) || p.phone;
   phoneEdit.error = "";
   nextTick(() => document.getElementById(`phone-edit-${keyOf(t)}`)?.focus());
 }
@@ -875,7 +908,7 @@ function cancelEditPhone() {
 function savePhone(t) {
   const p = patientOf(t);
   if (!p) return;
-  const phone = phoneEdit.value.trim().replace(/\s+/g, " ");
+  const phone = formatPhone(phoneEdit.value);
   const bad = checkPhone(phone, p.id);
   if (bad) return (phoneEdit.error = bad);
   if (phone !== p.phone) {
@@ -886,7 +919,7 @@ function savePhone(t) {
 }
 function savePatient() {
   const name = pat.name.trim().replace(/\s+/g, " ");
-  const phone = pat.phone.trim().replace(/\s+/g, " ");
+  const phone = formatPhone(pat.phone);
   if (name.length < 2) return (pat.error = "Введите ФИО пациента");
   const bad = checkPhone(phone);
   if (bad) return (pat.error = bad);
@@ -918,6 +951,85 @@ watch(
     }
   },
   { deep: true }
+);
+
+/* ---------- фильтры: ФИО, номер телефона, исполнитель ---------- */
+const filters = reactive({ name: "", phone: "", performer: "", assistant: "" }); // performer/assistant: '' — все, '__none__' — не назначен
+const filtersOpen = ref(false);
+const filtersActive = computed(() =>
+  Boolean(
+    filters.name.trim() ||
+      digitsOf(filters.phone) ||
+      filters.performer ||
+      filters.assistant
+  )
+);
+const activeFilterCount = computed(
+  () =>
+    [
+      filters.name.trim(),
+      digitsOf(filters.phone),
+      filters.performer,
+      filters.assistant,
+    ].filter(Boolean).length
+);
+const phoneByPatient = computed(
+  () => new Map(patientList.value.map((x) => [x.id, digitsOf(x.phone)]))
+);
+// исполнители для фильтра: сотрудники из списка + те, кто уже указан в событиях
+const filterPerformers = computed(() => {
+  const set = new Set(props.staff);
+  for (const list of Object.values(events))
+    for (const e of list) if (e.performer) set.add(e.performer);
+  return [...set].sort((a, b) => a.localeCompare(b, "ru"));
+});
+// ассистенты для фильтра: сотрудники из списка + те, кто уже указан в событиях
+const filterAssistants = computed(() => {
+  const set = new Set(props.staff);
+  for (const list of Object.values(events))
+    for (const e of list) for (const n of e.assistants ?? []) set.add(n);
+  return [...set].sort((a, b) => a.localeCompare(b, "ru"));
+});
+const matchesAssistant = (ev) =>
+  !filters.assistant ||
+  (filters.assistant === "__none__"
+    ? !(ev.assistants ?? []).length
+    : (ev.assistants ?? []).includes(filters.assistant));
+const matchesPerformer = (ev) =>
+  !filters.performer ||
+  (filters.performer === "__none__"
+    ? !ev.performer
+    : ev.performer === filters.performer);
+function matchesFilters(ev) {
+  if (!matchesPerformer(ev) || !matchesAssistant(ev)) return false;
+  const words = norm(filters.name).split(/\s+/).filter(Boolean);
+  if (words.length) {
+    const title = norm(ev.title);
+    if (!words.every((w) => title.includes(w))) return false;
+  }
+  const d = digitsOf(filters.phone);
+  if (d) {
+    const phone = phoneByPatient.value.get(ev.patientId) ?? "";
+    // «8 912…» и «+7 912…» — один и тот же номер
+    if (
+      !phone.includes(d) &&
+      !(d[0] === "8" && phone.includes("7" + d.slice(1)))
+    )
+      return false;
+  }
+  return true;
+}
+function resetFilters() {
+  filters.name = "";
+  filters.phone = "";
+  filters.performer = "";
+  filters.assistant = "";
+}
+// сколько событий подходит под фильтры в показанном месяце
+const filteredCount = computed(() =>
+  cells.value
+    .filter((c) => !c.outside)
+    .reduce((n, c) => n + sortedEvents(c.key).length, 0)
 );
 
 /* ---------- исполнитель и ассистенты ---------- */
@@ -1058,6 +1170,36 @@ watch(
         </div>
 
         <div class="cal__nav">
+          <button
+            class="btn btn--ghost filters-btn"
+            type="button"
+            aria-controls="cal-filters"
+            :aria-expanded="filtersOpen ? 'true' : 'false'"
+            :aria-label="
+              activeFilterCount
+                ? `Фильтры, включено: ${activeFilterCount}`
+                : 'Фильтры'
+            "
+            @click="filtersOpen = !filtersOpen"
+          >
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+              <path
+                d="M3.5 5h13l-5 6v4.5l-3 1.5V11z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="filters-btn__text">Фильтры</span>
+            <span
+              v-if="activeFilterCount"
+              class="filters-btn__badge"
+              aria-hidden="true"
+              >{{ activeFilterCount }}</span
+            >
+          </button>
           <button class="btn btn--ghost" type="button" @click="goToday">
             Сегодня
           </button>
@@ -1097,6 +1239,70 @@ watch(
           </button>
         </div>
       </header>
+
+      <!-- панель фильтров -->
+      <div
+        v-show="filtersOpen"
+        id="cal-filters"
+        class="filters"
+        role="search"
+        aria-label="Фильтры событий"
+      >
+        <label class="filters__field">
+          <span>Пациент</span>
+          <input
+            v-model="filters.name"
+            type="search"
+            placeholder="ФИО пациента"
+            autocomplete="off"
+          />
+        </label>
+        <label class="filters__field">
+          <span>Номер телефона</span>
+          <input
+            v-model="filters.phone"
+            type="tel"
+            inputmode="tel"
+            placeholder="Любая часть номера"
+            autocomplete="off"
+          />
+        </label>
+        <label class="filters__field">
+          <span>Исполнитель</span>
+          <select v-model="filters.performer">
+            <option value="">Все исполнители</option>
+            <option value="__none__">Не назначен</option>
+            <option v-for="n in filterPerformers" :key="n" :value="n">
+              {{ n }}
+            </option>
+          </select>
+        </label>
+        <label class="filters__field">
+          <span>Ассистент</span>
+          <select v-model="filters.assistant">
+            <option value="">Все ассистенты</option>
+            <option value="__none__">Без ассистента</option>
+            <option v-for="n in filterAssistants" :key="n" :value="n">
+              {{ n }}
+            </option>
+          </select>
+        </label>
+        <div class="filters__foot">
+          <span class="filters__count" aria-live="polite">{{
+            filtersActive
+              ? `Найдено: ${eventsWord(filteredCount)} в этом месяце`
+              : ""
+          }}</span>
+          <button
+            class="btn btn--ghost filters__reset"
+            type="button"
+            :disabled="!filtersActive"
+            @click="resetFilters"
+          >
+            Сбросить
+          </button>
+        </div>
+      </div>
 
       <div class="cal__weekdays" aria-hidden="true">
         <span
@@ -1203,13 +1409,7 @@ watch(
           <div>
             <p class="side__weekday">{{ panelWeekday }}</p>
             <h3>{{ panelTitle }}</h3>
-            <p class="side__count">
-              {{
-                panelEvents.length
-                  ? eventsWord(panelEvents.length)
-                  : "Событий нет"
-              }}
-            </p>
+            <p class="side__count">{{ panelCountLabel }}</p>
             <span v-if="panelReadonly" class="side__ro">
               <svg
                 viewBox="0 0 20 20"
@@ -1515,10 +1715,12 @@ watch(
                               <input
                                 :id="`phone-edit-${ev.id}`"
                                 :value="phoneEdit.value"
-                                @input="onMaskInput($event, phoneEdit, 'value')"
+                                @input="
+                                  onPhoneInput($event, phoneEdit, 'value')
+                                "
                                 type="tel"
                                 inputmode="tel"
-                                maxlength="24"
+                                maxlength="18"
                                 autocomplete="off"
                                 placeholder="+7 (900) 000-00-00"
                                 @keydown.enter.prevent="savePhone(ev)"
@@ -1624,10 +1826,10 @@ watch(
                             <span>Номер телефона</span>
                             <input
                               :value="pat.phone"
-                              @input="onMaskInput($event, pat, 'phone')"
+                              @input="onPhoneInput($event, pat, 'phone')"
                               type="tel"
                               inputmode="tel"
-                              maxlength="24"
+                              maxlength="18"
                               autocomplete="off"
                               placeholder="+7 (900) 000-00-00"
                               @keydown.enter.prevent="savePatient"
@@ -1856,7 +2058,9 @@ watch(
           </ul>
           <p v-else class="empty">
             {{
-              panelReadonly
+              filtersActive && panelTotal
+                ? "Ни одно событие этого дня не подходит под фильтры."
+                : panelReadonly
                 ? "В этот день событий не было."
                 : "На этот день ничего не запланировано. Добавьте первое событие ниже."
             }}
@@ -1978,10 +2182,10 @@ watch(
                   <input
                     :id="`phone-edit-new`"
                     :value="phoneEdit.value"
-                    @input="onMaskInput($event, phoneEdit, 'value')"
+                    @input="onPhoneInput($event, phoneEdit, 'value')"
                     type="tel"
                     inputmode="tel"
-                    maxlength="24"
+                    maxlength="18"
                     autocomplete="off"
                     placeholder="+7 (900) 000-00-00"
                     @keydown.enter.prevent="savePhone(form)"
@@ -2081,10 +2285,10 @@ watch(
                 <span>Номер телефона</span>
                 <input
                   :value="pat.phone"
-                  @input="onMaskInput($event, pat, 'phone')"
+                  @input="onPhoneInput($event, pat, 'phone')"
                   type="tel"
                   inputmode="tel"
-                  maxlength="24"
+                  maxlength="18"
                   autocomplete="off"
                   placeholder="+7 (900) 000-00-00"
                   @keydown.enter.prevent="savePatient"
@@ -2427,8 +2631,6 @@ watch(
   width: auto;
   height: auto;
   max-width: none;
-  border: 0;
-  border-radius: 0;
 }
 .cal *,
 .cal *::before,
@@ -2505,8 +2707,9 @@ watch(
     minmax(0, 1fr)
   ); /* высота календаря задана контейнером — месяцы не «прыгают» */
   min-height: 0;
-  border-top: 1px solid var(--line);
-  border-left: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden; /* ячейки обрезаются по скруглённым углам сетки */
 }
 
 /* ---------- ячейка дня ---------- */
@@ -2529,6 +2732,13 @@ watch(
   text-align: left;
   cursor: pointer;
   transition: background-color 0.15s;
+}
+/* внешнюю рамку рисует сама сетка, поэтому у крайних ячеек она не нужна */
+.day:nth-child(7n) {
+  border-right: 0;
+}
+.day:nth-last-child(-n + 7) {
+  border-bottom: 0;
 }
 .day:focus-visible {
   outline: 2px solid var(--accent);
@@ -3731,7 +3941,7 @@ button.now__card:focus-visible {
   outline-color: var(--error);
 }
 @media (hover: hover) {
-  .btn--ghost:hover {
+  .btn--ghost:hover:not(:disabled) {
     background: var(--muted);
   }
   .btn--icon:hover {
@@ -3816,6 +4026,97 @@ button.now__card:focus-visible {
   cursor: default;
 }
 
+/* ---------- панель фильтров ---------- */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.filters__field {
+  display: flex;
+  flex: 1 1 170px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.filters__field > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.filters__field input,
+.filters__field select {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.filters__field select {
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5 7.5 5 5 5-5' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 18px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.filters__field input:focus-visible,
+.filters__field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+.filters__foot {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.filters__count {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.filters__reset {
+  height: 44px;
+  flex: none;
+}
+.filters__reset:disabled {
+  background: var(--muted);
+  color: var(--text-3);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+.filters-btn {
+  position: relative;
+}
+.filters-btn__badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary-600);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -3891,6 +4192,10 @@ button.now__card:focus-visible {
   .cal__main {
     padding: 20px;
   }
+  .filters__field input,
+  .filters__field select {
+    font-size: 16px; /* чтобы iOS не приближал страницу при фокусе */
+  }
 }
 
 /* =====================  ТЕЛЕФОНЫ  ===================== */
@@ -3924,6 +4229,28 @@ button.now__card:focus-visible {
   }
   .cal__nav .btn--icon {
     width: 36px;
+  }
+  .filters {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    margin-bottom: 10px;
+  }
+  .filters__field,
+  .filters__foot {
+    flex: none;
+  }
+  .filters-btn {
+    width: 36px;
+    padding: 0 !important;
+  }
+  .filters-btn__text {
+    display: none;
+  }
+  .filters-btn__badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
   }
   .cal__weekdays {
     font-size: 12px;

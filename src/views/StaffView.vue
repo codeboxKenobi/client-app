@@ -77,21 +77,30 @@ watch(
   { immediate: true, deep: true }
 );
 
-const search = ref("");
+/* ---------- Фильтры (панель как в календаре) ---------- */
+const search = ref(""); // ФИО или email
+const phoneFilter = ref(""); // любая часть номера
 const statusFilter = ref("");
 const positionFilter = ref("");
+const filtersOpen = ref(true); // на планшетах и телефонах панель свёрнута (см. onMounted)
+
+const digitsOf = (v) => String(v ?? "").replace(/\D/g, "");
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase();
+  const d = digitsOf(phoneFilter.value);
   return items.value.filter((s) => {
-    if (
-      q &&
-      ![s.fullName, s.email, s.phone, s.position]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    )
+    if (q && ![s.fullName, s.email].join(" ").toLowerCase().includes(q))
       return false;
+    if (d) {
+      const phone = digitsOf(s.phone);
+      // «8 912…» и «+7 912…» — один и тот же номер
+      if (
+        !phone.includes(d) &&
+        !(d[0] === "8" && phone.includes("7" + d.slice(1)))
+      )
+        return false;
+    }
     if (statusFilter.value === "active" && s.fireDate) return false;
     if (statusFilter.value === "fired" && !s.fireDate) return false;
     if (positionFilter.value && s.position !== positionFilter.value)
@@ -121,12 +130,20 @@ const groups = computed(() => {
 
 function resetFilters() {
   search.value = "";
+  phoneFilter.value = "";
   statusFilter.value = "";
   positionFilter.value = "";
 }
-const hasFilters = computed(
-  () => !!(search.value || statusFilter.value || positionFilter.value)
+const activeFilterCount = computed(
+  () =>
+    [
+      search.value.trim(),
+      digitsOf(phoneFilter.value),
+      statusFilter.value,
+      positionFilter.value,
+    ].filter(Boolean).length
 );
+const hasFilters = computed(() => activeFilterCount.value > 0);
 
 // Modal state
 const modalOpen = ref(false);
@@ -338,7 +355,11 @@ function onKeydown(e) {
   else if (deleteTarget.value) deleteTarget.value = null;
   else if (modalOpen.value) closeModal();
 }
-onMounted(() => window.addEventListener("keydown", onKeydown));
+onMounted(() => {
+  // как в календаре: на планшетах и телефонах (до 1024px) панель фильтров свёрнута
+  filtersOpen.value = !window.matchMedia("(max-width: 1024px)").matches;
+  window.addEventListener("keydown", onKeydown);
+});
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 /* ---------- Маска телефона: +7 (900) 000-00-00 ---------- */
@@ -377,50 +398,113 @@ function onPhoneInput(e) {
 
 <template>
   <div class="page">
-    <h1 class="page__title">Персонал</h1>
+    <!-- Шапка: как у календаря — заголовок слева, кнопки справа -->
+    <header class="page__head">
+      <h1 class="page__title">Персонал</h1>
 
-    <div class="panel" role="toolbar" aria-label="Управление персоналом">
-      <input
-        v-model="search"
-        class="input panel__search"
-        type="search"
-        placeholder="Поиск по ФИО, email, телефону"
-      />
+      <div class="page__actions">
+        <button
+          class="btn btn--ghost filters-btn"
+          type="button"
+          aria-controls="staff-filters"
+          :aria-expanded="filtersOpen ? 'true' : 'false'"
+          :aria-label="
+            activeFilterCount
+              ? `Фильтры, включено: ${activeFilterCount}`
+              : 'Фильтры'
+          "
+          @click="filtersOpen = !filtersOpen"
+        >
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+            <path
+              d="M3.5 5h13l-5 6v4.5l-3 1.5V11z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span class="filters-btn__text">Фильтры</span>
+          <span
+            v-if="activeFilterCount"
+            class="filters-btn__badge"
+            aria-hidden="true"
+            >{{ activeFilterCount }}</span
+          >
+        </button>
 
-      <select
-        v-model="positionFilter"
-        class="input panel__select"
-        aria-label="Фильтр по должности"
-      >
-        <option value="">Все должности</option>
-        <option v-for="o in positions" :key="o" :value="o">{{ o }}</option>
-      </select>
+        <button class="btn btn--primary" type="button" @click="openCreate">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+            <path
+              d="M10 4.5v11M4.5 10h11"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span class="add__full">Добавить сотрудника</span>
+          <span class="add__short">Добавить</span>
+        </button>
+      </div>
+    </header>
 
-      <select
-        v-model="statusFilter"
-        class="input panel__select"
-        aria-label="Фильтр по статусу"
-      >
-        <option value="">Все статусы</option>
-        <option value="active">Работают</option>
-        <option value="fired">Уволены</option>
-      </select>
-
-      <button
-        class="btn btn--ghost"
-        :disabled="!hasFilters"
-        @click="resetFilters"
-      >
-        Сбросить
-      </button>
-
-      <span class="panel__count"
-        >{{ filtered.length }} из {{ items.length }}</span
-      >
-
-      <button class="btn btn--primary panel__add" @click="openCreate">
-        Добавить сотрудника
-      </button>
+    <!-- Панель фильтров: та же, что в календаре -->
+    <div
+      v-show="filtersOpen"
+      id="staff-filters"
+      class="filters"
+      role="search"
+      aria-label="Фильтры сотрудников"
+    >
+      <label class="filters__field">
+        <span>ФИО или email</span>
+        <input
+          v-model="search"
+          type="search"
+          placeholder="Фамилия, имя или email"
+          autocomplete="off"
+        />
+      </label>
+      <label class="filters__field">
+        <span>Номер телефона</span>
+        <input
+          v-model="phoneFilter"
+          type="tel"
+          inputmode="tel"
+          placeholder="Любая часть номера"
+          autocomplete="off"
+        />
+      </label>
+      <label class="filters__field">
+        <span>Должность</span>
+        <select v-model="positionFilter">
+          <option value="">Все должности</option>
+          <option v-for="o in positions" :key="o" :value="o">{{ o }}</option>
+        </select>
+      </label>
+      <label class="filters__field">
+        <span>Статус</span>
+        <select v-model="statusFilter">
+          <option value="">Все статусы</option>
+          <option value="active">Работают</option>
+          <option value="fired">Уволены</option>
+        </select>
+      </label>
+      <div class="filters__foot">
+        <span class="filters__count" aria-live="polite">{{
+          hasFilters ? `Найдено: ${filtered.length} из ${items.length}` : ""
+        }}</span>
+        <button
+          class="btn btn--ghost filters__reset"
+          type="button"
+          :disabled="!hasFilters"
+          @click="resetFilters"
+        >
+          Сбросить
+        </button>
+      </div>
     </div>
 
     <p v-if="!filtered.length" class="empty">
@@ -892,47 +976,112 @@ h3 {
   margin: 4px 0 0;
 }
 
-.page__title {
+/* Шапка — как у календаря */
+.page__head {
+  display: flex;
+  flex-wrap: nowrap;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
   margin-bottom: 20px;
 }
-/* на телефонах название страницы уже есть в верхней панели дашборда */
-@media (max-width: 640px) {
-  .page__title {
-    display: none;
-  }
+.page__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.add__short {
+  display: none;
 }
 
-/* Control panel: на всю ширину, без скролла, адаптивно */
-.panel {
+/* ---------- Панель фильтров (как в календаре) ---------- */
+.filters {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 12px 16px;
-  margin-bottom: 24px;
-  background: var(--surface);
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin-bottom: 20px;
+  padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
+  background: var(--surface);
 }
-.panel > * {
+.filters__field {
+  display: flex;
+  flex: 1 1 170px;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
 }
-.panel__search {
-  flex: 2 1 260px;
+.filters__field > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
 }
-.panel__select {
-  flex: 1 1 180px;
-  width: auto;
-}
-.panel__count {
-  color: var(--text-3);
+.filters__field input,
+.filters__field select {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--surface);
+  color: var(--text-1);
+  font: inherit;
   font-size: 14px;
-  white-space: nowrap;
+  -webkit-appearance: none;
+  appearance: none;
 }
-.panel__add {
-  margin-left: auto;
-  white-space: nowrap;
+.filters__field input::placeholder {
+  color: var(--text-3);
+}
+.filters__field select {
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5 7.5 5 5 5-5' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 18px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.filters__field input:focus-visible,
+.filters__field select:focus-visible {
+  outline: 2px solid var(--primary-600);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+.filters__foot {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.filters__count {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.filters__reset {
+  height: 44px;
+  flex: none;
+}
+.filters-btn {
+  position: relative;
+}
+.filters-btn__badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary-600);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
 }
 .btn:disabled {
   background: var(--muted-bg);
@@ -940,56 +1089,10 @@ h3 {
   border-color: var(--border);
   cursor: not-allowed;
 }
-
-/* Десктоп: всё в одну строку на всю ширину */
-@media (min-width: 1100px) {
-  .panel {
-    flex-wrap: nowrap;
-  }
-  .panel__search {
-    flex: 3 1 0;
-  }
-  .panel__select {
-    flex: 1.2 1 0;
-  }
-  .panel > .btn,
-  .panel__count {
-    flex: none;
-  }
-}
-
-/* Планшет: поиск на всю строку, ниже фильтры и кнопки */
-@media (max-width: 1099px) {
-  .panel__search {
-    flex: 1 1 100%;
-  }
-  .panel__select {
-    flex: 1 1 calc(50% - 6px);
-  }
-  .panel__count {
-    flex: 1 1 auto;
-  }
-}
-
-/* Телефон: всё в колонку, кнопки на всю ширину */
-@media (max-width: 560px) {
-  .panel {
-    padding: 12px;
-  }
-  .panel__select {
-    flex-basis: 100%;
-  }
-  .panel__count {
-    order: 5;
-    flex: 1 1 auto;
-  }
-  .panel > .btn {
-    flex: 1 1 auto;
-  }
-  .panel__add {
-    order: 6;
-    flex: 1 1 100%;
-    margin-left: 0;
+@media (max-width: 1024px) {
+  .filters__field input,
+  .filters__field select {
+    font-size: 16px; /* чтобы iOS не приближал страницу при фокусе */
   }
 }
 
@@ -998,10 +1101,15 @@ h3 {
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 20px;
 }
+/* пустое состояние — как в панели дня календаря */
 .empty {
-  text-align: center;
-  padding: 48px 0;
-  color: var(--text-3);
+  margin: 0 0 20px;
+  padding: 16px;
+  border: 1px dashed var(--text-3);
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-2);
 }
 
 /* Card */
@@ -1212,9 +1320,6 @@ select.input:disabled {
   color: var(--text-3);
   background-color: var(--muted-bg);
   cursor: not-allowed;
-}
-.input[type="search"]::-webkit-search-cancel-button {
-  -webkit-appearance: none;
 }
 
 /* Modal */
@@ -1489,7 +1594,56 @@ select.input:disabled {
 .group__head::after {
   order: 2;
 }
+
+/* ===== Телефоны: как в календаре ===== */
 @media (max-width: 640px) {
+  /* название страницы уже есть в верхней панели дашборда — в шапке остаются кнопки */
+  .page__title {
+    display: none;
+  }
+  .page__head {
+    gap: 8px;
+    min-height: 36px;
+    margin-bottom: 12px;
+  }
+  .page__actions {
+    flex: 1;
+    gap: 4px;
+  }
+  .page__actions .btn {
+    height: 36px;
+  }
+  .page__actions .btn--primary {
+    flex: 1;
+  }
+  .filters-btn {
+    width: 36px;
+    padding: 0 !important;
+  }
+  .filters-btn__text {
+    display: none;
+  }
+  .filters-btn__badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+  }
+  .add__full {
+    display: none;
+  }
+  .add__short {
+    display: inline;
+  }
+  .filters {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    margin-bottom: 12px;
+  }
+  .filters__field,
+  .filters__foot {
+    flex: none;
+  }
   .group__title {
     font-size: 16px;
   }

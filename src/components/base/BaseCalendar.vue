@@ -81,6 +81,26 @@ const props = defineProps({
 const emit = defineEmits(["patient-add", "patient-update"]);
 
 /* ---------- утилиты дат ---------- */
+
+// Уникальный id. crypto.randomUUID есть только в защищённом контексте (HTTPS/localhost) —
+// на обычном HTTP его нет, поэтому есть запасные варианты без зависимостей.
+function uid() {
+  const c = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  if (c && typeof c.getRandomValues === "function") {
+    const b = c.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; // версия 4
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(
+      16,
+      20
+    )}-${h.slice(20)}`;
+  }
+  return `id-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
 const pad = (n) => String(n).padStart(2, "0");
 const toKey = (d) =>
   `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -155,7 +175,7 @@ function seedDemo() {
     );
   events[shift(0)] = [
     {
-      id: crypto.randomUUID(),
+      id: uid(),
       title: "Иванова Мария Сергеевна",
       patientId: "p1",
       time: "11:00",
@@ -168,7 +188,7 @@ function seedDemo() {
       done: false,
     },
     {
-      id: crypto.randomUUID(),
+      id: uid(),
       title: "Петров Алексей Иванович",
       patientId: "p2",
       time: "15:30",
@@ -178,7 +198,7 @@ function seedDemo() {
   ];
   events[shift(2)] = [
     {
-      id: crypto.randomUUID(),
+      id: uid(),
       title: "Сидорова Елена Викторовна",
       patientId: "p3",
       time: "",
@@ -188,7 +208,7 @@ function seedDemo() {
   ];
   events[shift(5)] = [
     {
-      id: crypto.randomUUID(),
+      id: uid(),
       title: "Козлов Дмитрий Андреевич",
       patientId: "p4",
       time: "19:00",
@@ -613,7 +633,7 @@ function addEvent() {
   if (!title || !key || formEndError.value) return;
   if (!events[key]) events[key] = [];
   events[key].push({
-    id: crypto.randomUUID(),
+    id: uid(),
     title,
     patientId: form.patientId,
     time: form.time,
@@ -831,7 +851,7 @@ function savePatient() {
   if (name.length < 2) return (pat.error = "Введите ФИО пациента");
   const bad = checkPhone(phone);
   if (bad) return (pat.error = bad);
-  const created = { id: crypto.randomUUID(), name, phone };
+  const created = { id: uid(), name, phone };
   addedPatients.value.push(created);
   emit("patient-add", created); // чтобы родитель мог сохранить пациента у себя (например, на сервере)
   if (patTarget) selectPatient(patTarget, created);

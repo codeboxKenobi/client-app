@@ -515,6 +515,10 @@ const panelWeekday = computed(() => {
 const panelEvents = computed(() =>
   panelKey.value ? sortedEvents(panelKey.value) : []
 );
+// прошедшие дни (до сегодняшнего) — только просмотр: ничего нельзя добавить, изменить или удалить
+const panelReadonly = computed(
+  () => Boolean(panelKey.value) && panelKey.value < todayKey
+);
 
 /* ---------- свободные окна ---------- */
 const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
@@ -565,6 +569,7 @@ const freeWindows = computed(() =>
 
 // клик по свободному окну — новая запись с временем этого окна
 function createInWindow(w) {
+  if (panelReadonly.value) return;
   startCreate();
   form.time = w.start;
   form.endTime = w.end;
@@ -572,6 +577,7 @@ function createInWindow(w) {
 
 // клик по свободному окну в ячейке календаря — открыть день и сразу форму нового события
 function openFreeWindow(key, w) {
+  if (key < todayKey) return; // прошедший день — только просмотр
   if (selectedKey.value !== key) openDay(key);
   createInWindow(w);
 }
@@ -618,6 +624,7 @@ function resetForm() {
   resetPatientUi();
 }
 function startCreate() {
+  if (panelReadonly.value) return;
   expandedId.value = null;
   creating.value = true;
   if (!isSheet.value)
@@ -630,7 +637,7 @@ function cancelCreate() {
 function addEvent() {
   const title = form.title.trim();
   const key = panelKey.value;
-  if (!title || !key || formEndError.value) return;
+  if (!title || !key || key < todayKey || formEndError.value) return;
   if (!events[key]) events[key] = [];
   events[key].push({
     id: uid(),
@@ -649,12 +656,13 @@ function addEvent() {
 }
 function removeEvent(id) {
   const key = panelKey.value;
-  if (!key) return;
+  if (!key || key < todayKey) return;
   if (expandedId.value === id) expandedId.value = null;
   events[key] = events[key].filter((e) => e.id !== id);
   if (!events[key].length) delete events[key];
 }
 function toggleDone(ev) {
+  if (panelReadonly.value) return;
   ev.done = !ev.done;
 }
 
@@ -1079,6 +1087,7 @@ watch(
             'day--weekend': cell.weekend,
             'day--today': cell.isToday,
             'day--selected': cell.key === selectedKey,
+            'day--past': cell.key < todayKey,
           }"
           :aria-pressed="cell.key === selectedKey"
           :aria-label="`${cell.day} ${monthFmt.format(
@@ -1170,6 +1179,24 @@ watch(
                   : "Событий нет"
               }}
             </p>
+            <span v-if="panelReadonly" class="side__ro">
+              <svg
+                viewBox="0 0 20 20"
+                width="14"
+                height="14"
+                aria-hidden="true"
+              >
+                <path
+                  d="M6 9V6.5a4 4 0 0 1 8 0V9M5 9h10v7H5z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              Только просмотр
+            </span>
           </div>
           <button
             class="btn btn--icon"
@@ -1287,6 +1314,7 @@ watch(
                   <input
                     type="checkbox"
                     :checked="ev.done"
+                    :disabled="panelReadonly"
                     @change="toggleDone(ev)"
                   />
                   <span class="item__box" aria-hidden="true"></span>
@@ -1341,6 +1369,7 @@ watch(
                 </button>
 
                 <button
+                  v-if="!panelReadonly"
                   class="btn btn--icon btn--sm btn--danger"
                   type="button"
                   :aria-label="`Удалить «${ev.title}»`"
@@ -1372,112 +1401,220 @@ watch(
               >
                 <div class="item__collapse-inner">
                   <div class="details">
-                    <div class="field combo">
-                      <label class="combo__label" :for="`pat-in-${ev.id}`"
-                        >Пациент</label
-                      >
-                      <div class="combo__box">
-                        <input
-                          :id="`pat-in-${ev.id}`"
-                          class="combo__input"
-                          type="text"
-                          role="combobox"
-                          autocomplete="off"
-                          aria-autocomplete="list"
-                          aria-controls="pat-list"
-                          :aria-expanded="isPatientOpen(ev) ? 'true' : 'false'"
-                          :aria-activedescendant="
-                            isPatientOpen(ev)
-                              ? `pat-opt-${pat.active}`
-                              : undefined
-                          "
-                          :value="comboValue(ev)"
-                          :placeholder="
-                            isPatientOpen(ev) && ev.title
-                              ? ev.title
-                              : 'Фамилия, имя или телефон'
-                          "
-                          @focus="openPatient(ev)"
-                          @click="openPatient(ev)"
-                          @input="onPatientInput(ev, $event)"
-                          @keydown="onPatientKeydown($event, ev)"
-                          @blur="closePatient"
-                        />
-                        <svg
-                          viewBox="0 0 20 20"
-                          width="18"
-                          height="18"
-                          aria-hidden="true"
+                    <fieldset class="details__ro" :disabled="panelReadonly">
+                      <div class="field combo">
+                        <label class="combo__label" :for="`pat-in-${ev.id}`"
+                          >Пациент</label
                         >
-                          <path
-                            d="m5 7.5 5 5 5-5"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.8"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
+                        <div class="combo__box">
+                          <input
+                            :id="`pat-in-${ev.id}`"
+                            class="combo__input"
+                            type="text"
+                            role="combobox"
+                            autocomplete="off"
+                            aria-autocomplete="list"
+                            aria-controls="pat-list"
+                            :aria-expanded="
+                              isPatientOpen(ev) ? 'true' : 'false'
+                            "
+                            :aria-activedescendant="
+                              isPatientOpen(ev)
+                                ? `pat-opt-${pat.active}`
+                                : undefined
+                            "
+                            :value="comboValue(ev)"
+                            :placeholder="
+                              isPatientOpen(ev) && ev.title
+                                ? ev.title
+                                : 'Фамилия, имя или телефон'
+                            "
+                            @focus="openPatient(ev)"
+                            @click="openPatient(ev)"
+                            @input="onPatientInput(ev, $event)"
+                            @keydown="onPatientKeydown($event, ev)"
+                            @blur="closePatient"
                           />
-                        </svg>
-                      </div>
-                      <div
-                        v-if="
-                          patientOf(ev) &&
-                          !isPatientOpen(ev) &&
-                          !isAddingPatient(ev)
-                        "
-                        class="combo__phone"
-                      >
-                        <template v-if="!isEditingPhone(ev)">
-                          <span>Телефон: {{ patientOf(ev).phone }}</span>
-                          <button
-                            class="linkbtn"
-                            type="button"
-                            :aria-label="`Изменить телефон: ${
-                              patientOf(ev).name
-                            }`"
-                            @click="startEditPhone(ev)"
+                          <svg
+                            viewBox="0 0 20 20"
+                            width="18"
+                            height="18"
+                            aria-hidden="true"
                           >
-                            Изменить
-                          </button>
-                        </template>
+                            <path
+                              d="m5 7.5 5 5 5-5"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.8"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            />
+                          </svg>
+                        </div>
                         <div
-                          v-else
-                          class="newpat phoneedit"
-                          role="group"
-                          aria-label="Изменение телефона"
+                          v-if="
+                            patientOf(ev) &&
+                            !isPatientOpen(ev) &&
+                            !isAddingPatient(ev)
+                          "
+                          class="combo__phone"
                         >
+                          <template v-if="!isEditingPhone(ev)">
+                            <span>Телефон: {{ patientOf(ev).phone }}</span>
+                            <button
+                              v-if="!panelReadonly"
+                              class="linkbtn"
+                              type="button"
+                              :aria-label="`Изменить телефон: ${
+                                patientOf(ev).name
+                              }`"
+                              @click="startEditPhone(ev)"
+                            >
+                              Изменить
+                            </button>
+                          </template>
+                          <div
+                            v-else
+                            class="newpat phoneedit"
+                            role="group"
+                            aria-label="Изменение телефона"
+                          >
+                            <label class="field">
+                              <span>Номер телефона</span>
+                              <input
+                                :id="`phone-edit-${ev.id}`"
+                                v-model="phoneEdit.value"
+                                type="tel"
+                                inputmode="tel"
+                                maxlength="24"
+                                autocomplete="off"
+                                placeholder="+7 900 000-00-00"
+                                @keydown.enter.prevent="savePhone(ev)"
+                              />
+                            </label>
+                            <p
+                              v-if="phoneEdit.error"
+                              class="field-error"
+                              role="alert"
+                            >
+                              {{ phoneEdit.error }}
+                            </p>
+                            <div class="newpat__actions">
+                              <button
+                                class="btn btn--ghost"
+                                type="button"
+                                @click="cancelEditPhone"
+                              >
+                                Отмена
+                              </button>
+                              <button
+                                class="btn btn--primary"
+                                type="button"
+                                @click="savePhone(ev)"
+                              >
+                                Сохранить
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <ul
+                          v-if="isPatientOpen(ev)"
+                          id="pat-list"
+                          class="combo__list"
+                          role="listbox"
+                          aria-label="Пациенты"
+                        >
+                          <li
+                            v-for="(p, i) in patientMatches"
+                            :key="p.id"
+                            :id="`pat-opt-${i}`"
+                            class="combo__opt"
+                            :class="{
+                              'is-active': i === pat.active,
+                              'is-selected': p.id === ev.patientId,
+                            }"
+                            role="option"
+                            :aria-selected="p.id === ev.patientId"
+                            @mousedown.prevent
+                            @click="selectPatient(ev, p)"
+                          >
+                            <span class="combo__name">{{ p.name }}</span>
+                            <span class="combo__tel">{{ p.phone }}</span>
+                          </li>
+                          <li
+                            v-if="!patientMatches.length"
+                            class="combo__empty"
+                            role="presentation"
+                          >
+                            Пациент не найден
+                          </li>
+                          <li
+                            :id="`pat-opt-${patientMatches.length}`"
+                            class="combo__opt combo__opt--add"
+                            :class="{
+                              'is-active': pat.active === patientMatches.length,
+                            }"
+                            role="option"
+                            aria-selected="false"
+                            @mousedown.prevent
+                            @click="startAddPatient(ev)"
+                          >
+                            +
+                            {{
+                              pat.query.trim()
+                                ? `Добавить «${pat.query.trim()}» как нового пациента`
+                                : "Добавить нового пациента"
+                            }}
+                          </li>
+                        </ul>
+
+                        <div
+                          v-if="isAddingPatient(ev)"
+                          class="newpat"
+                          role="group"
+                          aria-label="Новый пациент"
+                        >
+                          <p class="newpat__title">Новый пациент</p>
+                          <label class="field">
+                            <span>ФИО</span>
+                            <input
+                              :id="`newpat-name-${ev.id}`"
+                              v-model="pat.name"
+                              type="text"
+                              maxlength="120"
+                              autocomplete="off"
+                              placeholder="Фамилия Имя Отчество"
+                              @keydown.enter.prevent="savePatient"
+                            />
+                          </label>
                           <label class="field">
                             <span>Номер телефона</span>
                             <input
-                              :id="`phone-edit-${ev.id}`"
-                              v-model="phoneEdit.value"
+                              v-model="pat.phone"
                               type="tel"
                               inputmode="tel"
                               maxlength="24"
                               autocomplete="off"
                               placeholder="+7 900 000-00-00"
-                              @keydown.enter.prevent="savePhone(ev)"
+                              @keydown.enter.prevent="savePatient"
                             />
                           </label>
-                          <p
-                            v-if="phoneEdit.error"
-                            class="field-error"
-                            role="alert"
-                          >
-                            {{ phoneEdit.error }}
+                          <p v-if="pat.error" class="field-error" role="alert">
+                            {{ pat.error }}
                           </p>
                           <div class="newpat__actions">
                             <button
                               class="btn btn--ghost"
                               type="button"
-                              @click="cancelEditPhone"
+                              @click="cancelAddPatient"
                             >
                               Отмена
                             </button>
                             <button
                               class="btn btn--primary"
                               type="button"
-                              @click="savePhone(ev)"
+                              @click="savePatient"
                             >
                               Сохранить
                             </button>
@@ -1485,286 +1622,192 @@ watch(
                         </div>
                       </div>
 
-                      <ul
-                        v-if="isPatientOpen(ev)"
-                        id="pat-list"
-                        class="combo__list"
-                        role="listbox"
-                        aria-label="Пациенты"
-                      >
-                        <li
-                          v-for="(p, i) in patientMatches"
-                          :key="p.id"
-                          :id="`pat-opt-${i}`"
-                          class="combo__opt"
-                          :class="{
-                            'is-active': i === pat.active,
-                            'is-selected': p.id === ev.patientId,
-                          }"
-                          role="option"
-                          :aria-selected="p.id === ev.patientId"
-                          @mousedown.prevent
-                          @click="selectPatient(ev, p)"
+                      <div class="details__pair">
+                        <label
+                          v-for="f in TIME_FIELDS"
+                          :key="f.key"
+                          class="field"
                         >
-                          <span class="combo__name">{{ p.name }}</span>
-                          <span class="combo__tel">{{ p.phone }}</span>
-                        </li>
-                        <li
-                          v-if="!patientMatches.length"
-                          class="combo__empty"
-                          role="presentation"
-                        >
-                          Пациент не найден
-                        </li>
-                        <li
-                          :id="`pat-opt-${patientMatches.length}`"
-                          class="combo__opt combo__opt--add"
-                          :class="{
-                            'is-active': pat.active === patientMatches.length,
-                          }"
-                          role="option"
-                          aria-selected="false"
-                          @mousedown.prevent
-                          @click="startAddPatient(ev)"
-                        >
-                          +
-                          {{
-                            pat.query.trim()
-                              ? `Добавить «${pat.query.trim()}» как нового пациента`
-                              : "Добавить нового пациента"
-                          }}
-                        </li>
-                      </ul>
-
-                      <div
-                        v-if="isAddingPatient(ev)"
-                        class="newpat"
-                        role="group"
-                        aria-label="Новый пациент"
-                      >
-                        <p class="newpat__title">Новый пациент</p>
-                        <label class="field">
-                          <span>ФИО</span>
-                          <input
-                            :id="`newpat-name-${ev.id}`"
-                            v-model="pat.name"
-                            type="text"
-                            maxlength="120"
-                            autocomplete="off"
-                            placeholder="Фамилия Имя Отчество"
-                            @keydown.enter.prevent="savePatient"
-                          />
-                        </label>
-                        <label class="field">
-                          <span>Номер телефона</span>
-                          <input
-                            v-model="pat.phone"
-                            type="tel"
-                            inputmode="tel"
-                            maxlength="24"
-                            autocomplete="off"
-                            placeholder="+7 900 000-00-00"
-                            @keydown.enter.prevent="savePatient"
-                          />
-                        </label>
-                        <p v-if="pat.error" class="field-error" role="alert">
-                          {{ pat.error }}
-                        </p>
-                        <div class="newpat__actions">
+                          <span>{{ f.label }}</span>
                           <button
-                            class="btn btn--ghost"
+                            v-if="isSmall"
                             type="button"
-                            @click="cancelAddPatient"
+                            class="timebtn"
+                            :class="{ 'timebtn--empty': !ev[f.key] }"
+                            :aria-label="`${f.label}: ${
+                              ev[f.key] || 'не задано'
+                            }`"
+                            @click="openPicker(ev, f, $event)"
                           >
-                            Отмена
-                          </button>
-                          <button
-                            class="btn btn--primary"
-                            type="button"
-                            @click="savePatient"
-                          >
-                            Сохранить
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="details__pair">
-                      <label
-                        v-for="f in TIME_FIELDS"
-                        :key="f.key"
-                        class="field"
-                      >
-                        <span>{{ f.label }}</span>
-                        <button
-                          v-if="isSmall"
-                          type="button"
-                          class="timebtn"
-                          :class="{ 'timebtn--empty': !ev[f.key] }"
-                          :aria-label="`${f.label}: ${
-                            ev[f.key] || 'не задано'
-                          }`"
-                          @click="openPicker(ev, f, $event)"
-                        >
-                          <span>{{ ev[f.key] || "Выбрать" }}</span>
-                          <svg
-                            viewBox="0 0 20 20"
-                            width="20"
-                            height="20"
-                            aria-hidden="true"
-                          >
-                            <circle
-                              cx="10"
-                              cy="10"
-                              r="7.25"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.7"
-                            />
-                            <path
-                              d="M10 5.8V10l2.8 1.8"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.7"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
-                        </button>
-                        <input
-                          v-else
-                          v-model="ev[f.key]"
-                          type="time"
-                          :min="
-                            f.key === 'endTime'
-                              ? ev.time || undefined
-                              : undefined
-                          "
-                        />
-                      </label>
-                    </div>
-                    <p
-                      v-if="endBeforeStart(ev)"
-                      class="field-error"
-                      role="alert"
-                    >
-                      Конец раньше начала
-                    </p>
-
-                    <label class="field">
-                      <span>Место</span>
-                      <input
-                        v-model="ev.location"
-                        type="text"
-                        maxlength="80"
-                        placeholder="Кабинет, адрес или онлайн"
-                        autocomplete="off"
-                      />
-                    </label>
-
-                    <label class="field">
-                      <span>Исполнитель</span>
-                      <select
-                        :value="ev.performer"
-                        @change="setPerformer(ev, $event.target.value)"
-                      >
-                        <option value="">Не выбран</option>
-                        <option
-                          v-for="n in performerOptions(ev)"
-                          :key="n"
-                          :value="n"
-                        >
-                          {{ n }}
-                        </option>
-                      </select>
-                    </label>
-
-                    <fieldset class="field">
-                      <legend>Ассистент</legend>
-                      <ul v-if="ev.assistants.length" class="tags">
-                        <li v-for="n in ev.assistants" :key="n" class="tag">
-                          <span>{{ n }}</span>
-                          <button
-                            type="button"
-                            class="tag__x"
-                            :aria-label="`Убрать ассистента ${n}`"
-                            @click="removeAssistant(ev, n)"
-                          >
+                            <span>{{ ev[f.key] || "Выбрать" }}</span>
                             <svg
                               viewBox="0 0 20 20"
-                              width="14"
-                              height="14"
+                              width="20"
+                              height="20"
                               aria-hidden="true"
                             >
-                              <path
-                                d="m5 5 10 10M15 5 5 15"
+                              <circle
+                                cx="10"
+                                cy="10"
+                                r="7.25"
                                 fill="none"
                                 stroke="currentColor"
-                                stroke-width="2"
+                                stroke-width="1.7"
+                              />
+                              <path
+                                d="M10 5.8V10l2.8 1.8"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.7"
                                 stroke-linecap="round"
+                                stroke-linejoin="round"
                               />
                             </svg>
                           </button>
-                        </li>
-                      </ul>
-                      <select
-                        :value="''"
-                        aria-label="Добавить ассистента"
-                        :disabled="!assistantChoices(ev).length"
-                        @change="addAssistant(ev, $event)"
-                      >
-                        <option value="">
-                          {{
-                            assistantChoices(ev).length
-                              ? "Добавить ассистента…"
-                              : "Все сотрудники выбраны"
-                          }}
-                        </option>
-                        <option
-                          v-for="n in assistantChoices(ev)"
-                          :key="n"
-                          :value="n"
-                        >
-                          {{ n }}
-                        </option>
-                      </select>
-                    </fieldset>
-
-                    <label class="field">
-                      <span>Описание</span>
-                      <textarea
-                        v-model="ev.notes"
-                        rows="4"
-                        maxlength="1000"
-                        placeholder="Заметки, повестка, что подготовить"
-                      ></textarea>
-                    </label>
-
-                    <fieldset class="field">
-                      <legend>Цвет</legend>
-                      <div class="colors">
-                        <label
-                          v-for="c in COLORS"
-                          :key="c.id"
-                          class="swatch"
-                          :title="c.label"
-                        >
                           <input
-                            v-model="ev.color"
-                            type="radio"
-                            :name="`color-${ev.id}`"
-                            :value="c.value"
+                            v-else
+                            v-model="ev[f.key]"
+                            type="time"
+                            :min="
+                              f.key === 'endTime'
+                                ? ev.time || undefined
+                                : undefined
+                            "
                           />
-                          <span :style="{ background: c.value }"></span>
-                          <span class="sr-only">{{ c.label }}</span>
                         </label>
                       </div>
+                      <p
+                        v-if="endBeforeStart(ev)"
+                        class="field-error"
+                        role="alert"
+                      >
+                        Конец раньше начала
+                      </p>
+
+                      <label class="field">
+                        <span>Место</span>
+                        <input
+                          v-model="ev.location"
+                          type="text"
+                          maxlength="80"
+                          placeholder="Кабинет, адрес или онлайн"
+                          autocomplete="off"
+                        />
+                      </label>
+
+                      <label class="field">
+                        <span>Исполнитель</span>
+                        <select
+                          :value="ev.performer"
+                          @change="setPerformer(ev, $event.target.value)"
+                        >
+                          <option value="">Не выбран</option>
+                          <option
+                            v-for="n in performerOptions(ev)"
+                            :key="n"
+                            :value="n"
+                          >
+                            {{ n }}
+                          </option>
+                        </select>
+                      </label>
+
+                      <fieldset class="field">
+                        <legend>Ассистент</legend>
+                        <ul v-if="ev.assistants.length" class="tags">
+                          <li v-for="n in ev.assistants" :key="n" class="tag">
+                            <span>{{ n }}</span>
+                            <button
+                              type="button"
+                              class="tag__x"
+                              :aria-label="`Убрать ассистента ${n}`"
+                              @click="removeAssistant(ev, n)"
+                            >
+                              <svg
+                                viewBox="0 0 20 20"
+                                width="14"
+                                height="14"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="m5 5 10 10M15 5 5 15"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                />
+                              </svg>
+                            </button>
+                          </li>
+                        </ul>
+                        <p
+                          v-if="panelReadonly && !ev.assistants.length"
+                          class="combo__phone"
+                        >
+                          Не указаны
+                        </p>
+                        <select
+                          v-if="!panelReadonly"
+                          :value="''"
+                          aria-label="Добавить ассистента"
+                          :disabled="!assistantChoices(ev).length"
+                          @change="addAssistant(ev, $event)"
+                        >
+                          <option value="">
+                            {{
+                              assistantChoices(ev).length
+                                ? "Добавить ассистента…"
+                                : "Все сотрудники выбраны"
+                            }}
+                          </option>
+                          <option
+                            v-for="n in assistantChoices(ev)"
+                            :key="n"
+                            :value="n"
+                          >
+                            {{ n }}
+                          </option>
+                        </select>
+                      </fieldset>
+
+                      <label class="field">
+                        <span>Описание</span>
+                        <textarea
+                          v-model="ev.notes"
+                          rows="4"
+                          maxlength="1000"
+                          placeholder="Заметки, повестка, что подготовить"
+                        ></textarea>
+                      </label>
+
+                      <fieldset class="field">
+                        <legend>Цвет</legend>
+                        <div class="colors">
+                          <label
+                            v-for="c in COLORS"
+                            :key="c.id"
+                            class="swatch"
+                            :title="c.label"
+                          >
+                            <input
+                              v-model="ev.color"
+                              type="radio"
+                              :name="`color-${ev.id}`"
+                              :value="c.value"
+                            />
+                            <span :style="{ background: c.value }"></span>
+                            <span class="sr-only">{{ c.label }}</span>
+                          </label>
+                        </div>
+                      </fieldset>
                     </fieldset>
 
                     <div class="details__foot">
-                      <span class="details__saved"
-                        >Изменения сохраняются сразу</span
-                      >
+                      <span class="details__saved">{{
+                        panelReadonly
+                          ? "Прошедший день: только просмотр"
+                          : "Изменения сохраняются сразу"
+                      }}</span>
                       <button
                         class="btn btn--ghost"
                         type="button"
@@ -1779,11 +1822,19 @@ watch(
             </li>
           </ul>
           <p v-else class="empty">
-            На этот день ничего не запланировано. Добавьте первое событие ниже.
+            {{
+              panelReadonly
+                ? "В этот день событий не было."
+                : "На этот день ничего не запланировано. Добавьте первое событие ниже."
+            }}
           </p>
 
           <!-- свободные окна: клик создаёт событие на это время -->
-          <section class="free" aria-label="Свободное время">
+          <section
+            v-if="!panelReadonly"
+            class="free"
+            aria-label="Свободное время"
+          >
             <h4 class="free__title">Свободное время</h4>
             <ul v-if="freeWindows.length" class="free__list">
               <li v-for="w in freeWindows" :key="w.start">
@@ -1874,6 +1925,7 @@ watch(
               <template v-if="!isEditingPhone(form)">
                 <span>Телефон: {{ patientOf(form).phone }}</span>
                 <button
+                  v-if="!panelReadonly"
                   class="linkbtn"
                   type="button"
                   :aria-label="`Изменить телефон: ${patientOf(form).name}`"
@@ -2192,8 +2244,13 @@ watch(
         <!-- кнопка создания: прячется, пока открыта форма или раскрыто событие -->
         <div
           class="form-wrap"
-          :class="{ 'form-wrap--hidden': creating || expandedId !== null }"
-          :inert="creating || expandedId !== null ? '' : undefined"
+          :class="{
+            'form-wrap--hidden':
+              creating || expandedId !== null || panelReadonly,
+          }"
+          :inert="
+            creating || expandedId !== null || panelReadonly ? '' : undefined
+          "
         >
           <div class="form-wrap__inner">
             <button
@@ -3656,6 +3713,72 @@ button.now__card:focus-visible {
   .btn--primary:hover:not(:disabled) {
     background: var(--primary-700);
   }
+}
+
+/* прошедшие дни — только просмотр */
+.day--past .day__num {
+  color: var(--ink-faint);
+}
+.day--past.day--today .day__num {
+  color: #fff;
+}
+.side__ro {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 2px 10px 2px 8px;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+.details__ro {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.details__ro:disabled :is(input, select, textarea) {
+  background-color: var(--muted);
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
+  opacity: 1;
+  cursor: default;
+}
+.details__ro:disabled textarea {
+  resize: none;
+}
+.details__ro:disabled select {
+  background-image: none;
+  padding-right: 12px;
+}
+.details__ro:disabled .combo__box svg,
+.details__ro:disabled .tag__x {
+  display: none;
+}
+.details__ro:disabled .tag {
+  padding-right: 12px;
+}
+.details__ro:disabled .timebtn {
+  background: var(--muted);
+  color: var(--ink);
+  cursor: default;
+}
+.details__ro:disabled .swatch,
+.details__ro:disabled .swatch input {
+  cursor: default;
+}
+.details__ro:disabled .swatch:not(:has(input:checked)) {
+  display: none;
+}
+.item__check input:disabled,
+.item__check:has(input:disabled) {
+  cursor: default;
 }
 
 .sr-only {

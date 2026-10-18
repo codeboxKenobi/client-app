@@ -31,6 +31,13 @@ const routes = [
         component: () =>
           import(/* webpackChunkName: "staff" */ "../views/StaffView.vue"),
       },
+      {
+        path: "guide",
+        name: "guide",
+        meta: { title: "Руководство пользователя" },
+        component: () =>
+          import(/* webpackChunkName: "staff" */ "../views/GuideView.vue"),
+      },
     ],
   },
   { path: "/:pathMatch(.*)*", redirect: "/" },

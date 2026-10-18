@@ -32,6 +32,13 @@ const routes = [
           import(/* webpackChunkName: "staff" */ "../views/StaffView.vue"),
       },
       {
+        path: "roles",
+        name: "roles",
+        meta: { title: "Роли" },
+        component: () =>
+          import(/* webpackChunkName: "staff" */ "../views/RolesView.vue"),
+      },
+      {
         path: "guide",
         name: "guide",
         meta: { title: "Руководство пользователя" },

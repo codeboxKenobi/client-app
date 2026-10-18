@@ -5,6 +5,8 @@ import {
   computed,
   watch,
   nextTick,
+  onMounted,
+  onBeforeUnmount,
   defineProps,
   defineEmits,
 } from "vue";
@@ -329,6 +331,16 @@ function onDpKeydown(e) {
   }
 }
 
+/* ---------- Esc закрывает верхнее открытое окно ---------- */
+function onKeydown(e) {
+  if (e.key !== "Escape") return;
+  if (dp.open) closeDatePicker();
+  else if (deleteTarget.value) deleteTarget.value = null;
+  else if (modalOpen.value) closeModal();
+}
+onMounted(() => window.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+
 /* ---------- Маска телефона: +7 (900) 000-00-00 ---------- */
 function formatPhone(value) {
   let d = String(value ?? "").replace(/\D/g, "");
@@ -484,13 +496,17 @@ function onPhoneInput(e) {
     </section>
 
     <!-- Create / edit modal -->
-    <div
-      v-if="modalOpen"
-      class="overlay"
-      @mousedown.self="closeModal"
-      @keydown.esc="closeModal"
-    >
-      <form class="modal" novalidate @submit.prevent="save">
+    <div v-if="modalOpen" class="overlay" @mousedown.self="closeModal">
+      <form
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="
+          editingId === null ? 'Новый сотрудник' : 'Редактирование сотрудника'
+        "
+        novalidate
+        @submit.prevent="save"
+      >
         <h2>
           {{
             editingId === null ? "Новый сотрудник" : "Редактирование сотрудника"
@@ -669,7 +685,12 @@ function onPhoneInput(e) {
       class="overlay"
       @mousedown.self="deleteTarget = null"
     >
-      <div class="modal modal--small">
+      <div
+        class="modal modal--small"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Удаление сотрудника"
+      >
         <h2>Удалить сотрудника?</h2>
         <p class="muted field--full">
           Карточка «{{ deleteTarget.fullName }}» будет удалена без возможности
@@ -823,12 +844,13 @@ function onPhoneInput(e) {
   --error: #ef4444;
   --emergency: #dc2626;
 
-  min-height: 100vh;
+  min-height: 100%;
   padding: 24px;
   background: var(--bg);
   color: var(--text-2);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 .page *,
 .page *::before,
@@ -855,10 +877,14 @@ h3 {
   color: var(--text-1);
 }
 h1 {
-  font-size: 28px;
+  font-size: clamp(24px, 4vw, 34px);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 h3 {
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 600;
 }
 .muted {
   color: var(--text-3);
@@ -869,10 +895,10 @@ h3 {
 .page__title {
   margin-bottom: 20px;
 }
+/* на телефонах название страницы уже есть в верхней панели дашборда */
 @media (max-width: 640px) {
   .page__title {
-    font-size: 20px;
-    margin-bottom: 12px;
+    display: none;
   }
 }
 
@@ -887,7 +913,7 @@ h3 {
   margin-bottom: 24px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
 }
 .panel > * {
   min-width: 0;
@@ -982,7 +1008,8 @@ h3 {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-left: 4px solid var(--text-3); /* цветная полоска слева — как у событий календаря */
+  border-radius: 8px;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -991,7 +1018,8 @@ h3 {
 }
 .card--active {
   background: var(--primary-50);
-  border-color: #99f6e4;
+  border-color: color-mix(in srgb, var(--primary-600) 35%, var(--border));
+  border-left-color: var(--primary-600);
 }
 .card:not(.card--active) {
   background: var(--surface);
@@ -1033,12 +1061,13 @@ h3 {
   white-space: nowrap;
 }
 .badge--on {
-  background: #d1fae5;
-  color: #047857;
+  background: color-mix(in srgb, var(--success) 18%, white);
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 1px var(--success);
 }
 .badge--off {
   background: var(--muted-bg);
-  color: var(--text-3);
+  color: var(--text-2);
 }
 
 .card__info {
@@ -1065,9 +1094,11 @@ h3 {
   color: var(--primary-600);
   text-decoration: none;
 }
-.card__info a:hover {
-  color: var(--primary-700);
-  text-decoration: underline;
+@media (hover: hover) {
+  .card__info a:hover {
+    color: var(--primary-700);
+    text-decoration: underline;
+  }
 }
 
 .card__footer {
@@ -1103,18 +1134,13 @@ h3 {
   background: var(--primary-600);
   color: #fff;
 }
-.btn--primary:hover,
-.btn--primary:active {
+.btn--primary:active:not(:disabled) {
   background: var(--primary-700);
 }
 .btn--ghost {
   background: var(--surface);
-  color: var(--primary-600);
+  color: var(--text-1);
   border-color: var(--border);
-}
-.btn--ghost:hover {
-  background: var(--primary-50);
-  border-color: var(--primary-600);
 }
 .btn--danger {
   background: var(--surface);
@@ -1122,16 +1148,26 @@ h3 {
   border-color: var(--border);
   margin-left: auto;
 }
-.btn--danger:hover {
-  background: #fef2f2;
-  border-color: var(--error);
+.btn--danger:focus-visible {
+  outline-color: var(--error);
 }
 .btn--emergency {
   background: var(--emergency);
   color: #fff;
 }
-.btn--emergency:hover {
-  background: #b91c1c;
+@media (hover: hover) {
+  .btn--primary:hover:not(:disabled) {
+    background: var(--primary-700);
+  }
+  .btn--ghost:hover:not(:disabled) {
+    background: var(--muted-bg);
+  }
+  .btn--danger:hover {
+    background: color-mix(in srgb, var(--error) 10%, white);
+  }
+  .btn--emergency:hover {
+    background: #b91c1c;
+  }
 }
 
 /* Inputs и selects — единый стиль: высота 44px, радиус 8px, шрифт 16px (iOS не приближает страницу при фокусе) */
@@ -1185,7 +1221,7 @@ select.input:disabled {
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 150; /* выше бокового меню и его затемнения */
   background: rgba(15, 23, 42, 0.45);
   display: grid;
   place-items: center;
@@ -1196,7 +1232,7 @@ select.input:disabled {
   width: 100%;
   max-width: 640px;
   background: var(--surface);
-  border-radius: 16px;
+  border-radius: 14px;
   padding: 24px;
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1324,9 +1360,11 @@ select.input:disabled {
   color: var(--text-2);
   background: transparent;
 }
-.btn--icon:hover {
-  background: var(--muted-bg);
-  color: var(--text-1);
+@media (hover: hover) {
+  .btn--icon:hover {
+    background: var(--muted-bg);
+    color: var(--text-1);
+  }
 }
 
 .dp__weekdays {
@@ -1362,8 +1400,10 @@ select.input:disabled {
   cursor: pointer;
   transition: background-color 0.15s, color 0.15s;
 }
-.dp__day:hover:not(:disabled):not(.is-selected) {
-  background: var(--primary-50);
+@media (hover: hover) {
+  .dp__day:hover:not(:disabled):not(.is-selected) {
+    background: var(--primary-50);
+  }
 }
 .dp__day.is-outside {
   color: var(--text-3);
@@ -1379,8 +1419,10 @@ select.input:disabled {
   color: #fff;
   opacity: 1;
 }
-.dp__day.is-selected:hover {
-  background: var(--primary-700);
+@media (hover: hover) {
+  .dp__day.is-selected:hover {
+    background: var(--primary-700);
+  }
 }
 .dp__day:disabled {
   opacity: 0.3;
@@ -1403,8 +1445,10 @@ select.input:disabled {
   color: var(--text-2);
   background: transparent;
 }
-.picker__clear:hover {
-  color: var(--text-1);
+@media (hover: hover) {
+  .picker__clear:hover {
+    color: var(--text-1);
+  }
 }
 
 /* Блоки по специальности */
@@ -1451,6 +1495,14 @@ select.input:disabled {
   }
   .group + .group {
     margin-top: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .card,
+  .dp__day {
+    transition: none !important;
   }
 }
 </style>

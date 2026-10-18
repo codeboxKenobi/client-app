@@ -3,28 +3,37 @@ import HomeView from "../views/HomeView.vue";
 
 const routes = [
   {
+    // страница входа / регистрации
     path: "/",
     name: "home",
     component: HomeView,
   },
   {
-    path: "/calendar",
-    name: "calendar",
-    // route level code-splitting
-    // this generates a separate chunk (about.[hash].js) for this route
-    // which is lazy-loaded when the route is visited.
+    // основной макет: боковое меню + router-view для вложенных страниц
+    path: "/dashboard",
     component: () =>
-      import(/* webpackChunkName: "calendar" */ "../views/CalendarView.vue"),
+      import(/* webpackChunkName: "dashboard" */ "../views/DashboardView.vue"),
+    children: [
+      { path: "", redirect: { name: "calendar" } },
+      {
+        path: "calendar",
+        name: "calendar",
+        meta: { title: "Календарь" },
+        component: () =>
+          import(
+            /* webpackChunkName: "calendar" */ "../views/CalendarView.vue"
+          ),
+      },
+      {
+        path: "staff",
+        name: "staff",
+        meta: { title: "Персонал" },
+        component: () =>
+          import(/* webpackChunkName: "staff" */ "../views/StaffView.vue"),
+      },
+    ],
   },
-  {
-    path: "/staff",
-    name: "staff",
-    // route level code-splitting
-    // this generates a separate chunk (about.[hash].js) for this route
-    // which is lazy-loaded when the route is visited.
-    component: () =>
-      import(/* webpackChunkName: "staff" */ "../views/StaffView.vue"),
-  },
+  { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
 
 const router = createRouter({

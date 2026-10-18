@@ -3,6 +3,7 @@ import BaseCalendar from "@/components/base/BaseCalendar.vue";
 </script>
 
 <template>
+  <!-- высота ровно по окну дашборда: без max-height, иначе внизу остаётся пустая полоса -->
   <div class="desktop">
     <base-calendar />
   </div>
@@ -10,8 +11,7 @@ import BaseCalendar from "@/components/base/BaseCalendar.vue";
 
 <style scoped>
 .desktop {
-  display: flex;
   height: 100%;
-  max-height: 90%;
+  min-height: 0;
 }
 </style>

@@ -315,12 +315,12 @@ function goForgot() {
   <main class="auth">
     <div class="auth__column">
       <div class="auth__brand">
-        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-          <rect width="28" height="28" rx="8" fill="#0F766E" />
+        <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+          <rect width="40" height="40" rx="10" fill="#0F766E" />
           <path
-            d="M14 7v14M7 14h14"
+            d="M20 14v12M14 20h12"
             stroke="#fff"
-            stroke-width="3"
+            stroke-width="2.4"
             stroke-linecap="round"
           />
         </svg>
@@ -557,24 +557,29 @@ function goForgot() {
 </template>
 
 <style scoped>
-/* Палитра. При желании вынесите в глобальные CSS-переменные. */
+/* Стиль и палитра — как в BaseCalendar.vue */
 .auth {
   --primary-600: #0f766e;
   --primary-700: #115e59;
   --primary-50: #f0fdfa;
-  --accent-blue: #005a9c;
-  --bg-default: #f8fafc;
-  --bg-surface: #ffffff;
-  --bg-muted: #f1f5f9;
-  --text: #0f172a;
-  --text-muted: #475569;
-  --border: #cbd5e1;
-  --danger: #b91c1c;
-  --danger-bg: #fef2f2;
-  --warning: #b45309;
-  --focus-ring: 0 0 0 3px rgba(15, 118, 110, 0.22);
+  --blue: #005a9c;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --muted: #f1f5f9;
+  --border: #e2e8f0;
+  --text-1: #0f172a;
+  --text-2: #475569;
+  --text-3: #64748b;
+  --warning: #f59e0b;
+  --error: #ef4444;
 
-  /* Адаптивные размеры: подстраиваются под высоту экрана */
+  --ink: var(--text-1);
+  --ink-soft: var(--text-2);
+  --ink-faint: var(--text-3);
+  --line: var(--border);
+  --accent: var(--primary-600);
+
+  /* Адаптивные размеры: подстраиваются под высоту экрана (не больше 44px, как в календаре) */
   --gap: clamp(8px, 1.7vh, 16px);
   --gap-lg: clamp(10px, 2.2vh, 22px);
   --ctl-h: clamp(38px, 5.2vh, 44px);
@@ -586,10 +591,16 @@ function goForgot() {
   display: grid;
   place-items: center;
   padding: clamp(8px, 2.5vh, 32px) 16px;
-  background: var(--bg-default);
-  color: var(--text);
+  background: var(--bg);
+  color: var(--ink);
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+.auth *,
+.auth *::before,
+.auth *::after {
+  box-sizing: border-box;
 }
 .auth__column {
   width: 100%;
@@ -603,17 +614,17 @@ function goForgot() {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: var(--gap-lg);
-  font-weight: 650;
+  font-weight: 700;
   font-size: 18px;
+  letter-spacing: -0.01em;
 }
 .auth__card {
-  background: var(--bg-surface);
-  border: 1px solid #e2e8f0;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 14px;
   padding: clamp(14px, 3vh, 28px);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   min-height: 0;
   overflow-y: auto; /* запасной вариант: скролл только внутри карточки на очень низких экранах */
   overscroll-behavior: contain;
@@ -623,14 +634,15 @@ function goForgot() {
 }
 .auth__header h1 {
   margin: 0 0 6px;
-  font-size: clamp(20px, 3.3vh, 24px);
-  line-height: 1.25;
-  letter-spacing: -0.01em;
+  font-size: clamp(20px, 3.3vh, 28px);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .auth__header p {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 15px;
+  color: var(--ink-soft);
+  font-size: 14px;
   line-height: 1.5;
 }
 .auth__footer {
@@ -638,20 +650,27 @@ function goForgot() {
   margin: var(--gap-lg) 0 0;
   text-align: center;
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--ink-soft);
 }
 .auth__footer a,
 .link,
 .check a {
   color: var(--primary-600);
-  font-weight: 550;
-  text-decoration: none;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .auth__footer a:hover,
 .link:hover,
 .check a:hover {
   color: var(--primary-700);
-  text-decoration: underline;
+}
+.auth__footer a:focus-visible,
+.link:focus-visible,
+.check a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* Вкладки */
@@ -661,32 +680,35 @@ function goForgot() {
   gap: 4px;
   padding: 4px;
   margin-bottom: var(--gap-lg);
-  background: var(--bg-muted);
+  background: var(--muted);
   border-radius: 10px;
 }
 .tab {
-  padding: clamp(6px, 1.2vh, 9px) 12px;
+  height: clamp(32px, 4.6vh, 38px);
+  padding: 0 12px;
   border: 0;
   border-radius: 7px;
   background: transparent;
   cursor: pointer;
   font: inherit;
   font-size: 14px;
-  font-weight: 550;
-  color: var(--text-muted);
-  transition: background 0.15s, color 0.15s;
-}
-.tab:hover {
-  color: var(--primary-700);
+  font-weight: 600;
+  color: var(--ink-soft);
+  transition: background-color 0.15s, color 0.15s;
 }
 .tab.is-active {
-  background: var(--primary-50);
-  color: var(--primary-600);
-  box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.25);
+  background: var(--surface);
+  color: var(--primary-700);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
 }
 .tab:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (hover: hover) {
+  .tab:not(.is-active):hover {
+    color: var(--ink);
+  }
 }
 
 /* Алерты */
@@ -698,14 +720,14 @@ function goForgot() {
   line-height: 1.45;
 }
 .alert--error {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border: 1px solid #fecaca;
+  background: color-mix(in srgb, var(--error) 8%, white);
+  color: var(--error);
+  border: 1px solid color-mix(in srgb, var(--error) 30%, white);
 }
 .alert--success {
   background: var(--primary-50);
   color: var(--primary-700);
-  border: 1px solid #99f6e4;
+  border: 1px solid color-mix(in srgb, var(--primary-600) 35%, var(--line));
 }
 
 /* Поля */
@@ -715,46 +737,43 @@ function goForgot() {
 .field__label {
   display: block;
   margin-bottom: 6px;
-  font-size: 14px;
-  font-weight: 550;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
 }
 .field__control {
   position: relative;
 }
 .field__input {
   width: 100%;
-  box-sizing: border-box;
   height: var(--ctl-h);
   padding: 0 12px;
   font: inherit;
-  font-size: 15px;
-  color: var(--text);
-  background: var(--bg-muted);
-  border: 1px solid transparent;
+  font-size: 16px; /* 16px — чтобы iOS не приближал страницу при фокусе */
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  -webkit-appearance: none;
+  appearance: none;
 }
 .field__input::placeholder {
-  color: #94a3b8;
+  color: var(--ink-faint);
+  opacity: 0.8;
 }
-.field__input:hover {
-  border-color: var(--border);
-}
-.field__input:focus {
-  outline: none;
-  background: var(--bg-surface);
-  border-color: var(--primary-600);
-  box-shadow: var(--focus-ring);
+.field__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
 }
 .field__input--action {
   padding-right: 46px;
 }
 .has-error .field__input {
-  background: var(--bg-surface);
-  border-color: var(--danger);
+  border-color: var(--error);
 }
-.has-error .field__input:focus {
-  box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.18);
+.has-error .field__input:focus-visible {
+  outline-color: var(--error);
 }
 .field__toggle {
   position: absolute;
@@ -767,26 +786,28 @@ function goForgot() {
   place-items: center;
   border: 0;
   background: transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
-  color: var(--text-muted);
-}
-.field__toggle:hover {
-  color: var(--primary-600);
-  background: var(--primary-50);
+  color: var(--ink-faint);
 }
 .field__toggle:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (hover: hover) {
+  .field__toggle:hover {
+    color: var(--ink);
+    background: var(--muted);
+  }
 }
 .field__msg {
   margin: 6px 0 0;
   font-size: 13px;
   line-height: 1.4;
-  color: var(--text-muted);
+  color: var(--ink-soft);
 }
 .field__msg--error {
-  color: var(--danger);
+  color: var(--error);
 }
 
 /* Надёжность пароля */
@@ -801,23 +822,23 @@ function goForgot() {
 .strength__bars span {
   height: 4px;
   border-radius: 2px;
-  background: var(--bg-muted);
-  transition: background 0.2s;
+  background: var(--muted);
+  transition: background-color 0.2s;
 }
 .strength__label {
   display: block;
   margin-top: 6px;
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--ink-soft);
 }
 .strength[data-score="1"] .on {
-  background: var(--danger);
+  background: var(--error);
 }
 .strength[data-score="2"] .on {
   background: var(--warning);
 }
 .strength[data-score="3"] .on {
-  background: var(--accent-blue);
+  background: var(--blue);
 }
 .strength[data-score="4"] .on {
   background: var(--primary-600);
@@ -838,11 +859,13 @@ function goForgot() {
   gap: 8px;
   cursor: pointer;
   font-size: 14px;
+  color: var(--ink-soft);
 }
 .check input {
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
   accent-color: var(--primary-600);
 }
 .check--top {
@@ -850,65 +873,67 @@ function goForgot() {
   align-items: flex-start;
   gap: 10px;
   line-height: 1.45;
-  color: var(--text-muted);
 }
 .check--top input {
-  margin-top: 2px;
+  margin-top: 1px;
 }
 .agree {
   margin: 4px 0 var(--gap-lg);
 }
 .agree__error {
-  margin: 6px 0 0 26px;
+  margin: 6px 0 0 28px;
   font-size: 13px;
-  color: var(--danger);
+  color: var(--error);
 }
 
 /* Кнопка */
 .btn {
   width: 100%;
-  height: calc(var(--ctl-h) + 2px);
+  height: var(--ctl-h);
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   margin-top: 4px;
+  padding: 0 16px;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: #fff;
-  background: var(--primary-600);
-  border: 0;
+  background: var(--accent);
+  border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.15s, transform 0.05s;
+  transition: background-color 0.15s, border-color 0.15s, opacity 0.15s;
 }
 .row + .btn,
 .agree + .btn {
   margin-top: 0;
 }
-.btn:hover:not(:disabled),
 .btn:active:not(:disabled) {
   background: var(--primary-700);
 }
-.btn:active:not(:disabled) {
-  transform: translateY(1px);
-}
 .btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px #fff, 0 0 0 5px var(--primary-600);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .btn:disabled {
-  opacity: 0.6;
+  background: var(--muted);
+  color: var(--ink-faint);
   cursor: not-allowed;
+}
+@media (hover: hover) {
+  .btn:hover:not(:disabled) {
+    background: var(--primary-700);
+  }
 }
 .btn__spinner {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.45);
-  border-top-color: #fff;
+  border: 2px solid rgba(100, 116, 139, 0.35);
+  border-top-color: var(--ink-faint);
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin {
@@ -920,16 +945,17 @@ function goForgot() {
   .btn__spinner {
     animation-duration: 2s;
   }
+  .tab,
+  .btn,
+  .strength__bars span {
+    transition: none;
+  }
 }
 
 /* Низкие экраны: убираем второстепенный текст, чтобы всё помещалось без прокрутки */
 @media (max-height: 780px) {
-  .field__msg--hint {
-    display: none;
-  }
-  .auth__header p {
-    display: none;
-  }
+  .field__msg--hint,
+  .auth__header p,
   .strength__label {
     display: none;
   }
@@ -955,9 +981,6 @@ function goForgot() {
   .auth {
     padding-left: 12px;
     padding-right: 12px;
-  }
-  .auth__card {
-    border-radius: 12px;
   }
 }
 

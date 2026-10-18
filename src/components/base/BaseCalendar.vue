@@ -698,9 +698,10 @@ const patientList = computed(() =>
     ...addedPatients.value.filter(
       (x) => !props.patients.some((p) => p.id === x.id)
     ),
-  ].map((p) =>
-    phoneEdits.value[p.id] ? { ...p, phone: phoneEdits.value[p.id] } : p
-  )
+  ].map((p) => ({
+    ...p,
+    phone: formatPhone(phoneEdits.value[p.id] || p.phone),
+  }))
 );
 const phoneEdit = reactive({ key: null, value: "", error: "" }); // редактирование телефона выбранного пациента
 const pat = reactive({
@@ -719,6 +720,37 @@ const norm = (v) =>
     .toLowerCase()
     .replace(/ё/g, "е");
 const digitsOf = (v) => String(v ?? "").replace(/\D/g, "");
+
+/* ---------- маска телефона: +7 (900) 000-00-00 ---------- */
+function formatPhone(value) {
+  let d = digitsOf(value);
+  if (!d) return "";
+  if (d[0] === "7" || d[0] === "8") d = d.slice(1); // код страны вводится маской
+  d = d.slice(0, 10);
+  let out = "+7";
+  if (d.length) out += " (" + d.slice(0, 3);
+  if (d.length > 3) out += ") " + d.slice(3, 6); // скобка и дефисы добавляются только вместе со следующей цифрой,
+  if (d.length > 6) out += "-" + d.slice(6, 8); // поэтому Backspace стирает цифры, а не разделители
+  if (d.length > 8) out += "-" + d.slice(8, 10);
+  return out;
+}
+// ввод в поле телефона: target[key] — значение, target.error — сообщение об ошибке
+function onMaskInput(e, target, key) {
+  const el = e.target;
+  const atEnd = el.selectionStart === el.value.length;
+  const digitsBefore = digitsOf(el.value.slice(0, el.selectionStart)).length;
+  const formatted = formatPhone(el.value);
+  el.value = formatted;
+  target[key] = formatted;
+  target.error = "";
+  if (atEnd) return;
+  // возвращаем курсор после того же количества цифр
+  let seen = 0,
+    pos = 0;
+  while (pos < formatted.length && seen < digitsBefore)
+    if (/\d/.test(formatted[pos++])) seen++;
+  el.setSelectionRange(pos, pos);
+}
 const keyOf = (t) => t.id ?? "new";
 
 // поиск по ФИО (любые части слов, в любом порядке) и по цифрам телефона
@@ -806,7 +838,7 @@ function startAddPatient(t) {
   const q = pat.query.trim();
   const onlyDigits = q && /\d/.test(q) && !/\p{L}/u.test(q);
   pat.name = onlyDigits ? "" : q;
-  pat.phone = onlyDigits ? q : "";
+  pat.phone = onlyDigits ? formatPhone(q) : "";
   pat.error = "";
   pat.open = false;
   pat.adding = true;
@@ -819,8 +851,7 @@ function cancelAddPatient() {
 // '' — телефон корректен; иначе текст ошибки. exceptId — пациент, чей номер мы сейчас меняем
 function checkPhone(phone, exceptId = null) {
   const digits = digitsOf(phone);
-  if (digits.length < 10 || digits.length > 15)
-    return "Введите корректный номер телефона";
+  if (digits.length < 11) return "Введите номер полностью";
   const dup = patientList.value.find(
     (x) =>
       x.id !== exceptId && digitsOf(x.phone).slice(-10) === digits.slice(-10)
@@ -833,7 +864,7 @@ function startEditPhone(t) {
   pat.open = false;
   pat.adding = false;
   phoneEdit.key = keyOf(t);
-  phoneEdit.value = p.phone;
+  phoneEdit.value = formatPhone(p.phone);
   phoneEdit.error = "";
   nextTick(() => document.getElementById(`phone-edit-${keyOf(t)}`)?.focus());
 }
@@ -1483,12 +1514,13 @@ watch(
                               <span>Номер телефона</span>
                               <input
                                 :id="`phone-edit-${ev.id}`"
-                                v-model="phoneEdit.value"
+                                :value="phoneEdit.value"
+                                @input="onMaskInput($event, phoneEdit, 'value')"
                                 type="tel"
                                 inputmode="tel"
                                 maxlength="24"
                                 autocomplete="off"
-                                placeholder="+7 900 000-00-00"
+                                placeholder="+7 (900) 000-00-00"
                                 @keydown.enter.prevent="savePhone(ev)"
                               />
                             </label>
@@ -1591,12 +1623,13 @@ watch(
                           <label class="field">
                             <span>Номер телефона</span>
                             <input
-                              v-model="pat.phone"
+                              :value="pat.phone"
+                              @input="onMaskInput($event, pat, 'phone')"
                               type="tel"
                               inputmode="tel"
                               maxlength="24"
                               autocomplete="off"
-                              placeholder="+7 900 000-00-00"
+                              placeholder="+7 (900) 000-00-00"
                               @keydown.enter.prevent="savePatient"
                             />
                           </label>
@@ -1944,12 +1977,13 @@ watch(
                   <span>Номер телефона</span>
                   <input
                     :id="`phone-edit-new`"
-                    v-model="phoneEdit.value"
+                    :value="phoneEdit.value"
+                    @input="onMaskInput($event, phoneEdit, 'value')"
                     type="tel"
                     inputmode="tel"
                     maxlength="24"
                     autocomplete="off"
-                    placeholder="+7 900 000-00-00"
+                    placeholder="+7 (900) 000-00-00"
                     @keydown.enter.prevent="savePhone(form)"
                   />
                 </label>
@@ -2046,12 +2080,13 @@ watch(
               <label class="field">
                 <span>Номер телефона</span>
                 <input
-                  v-model="pat.phone"
+                  :value="pat.phone"
+                  @input="onMaskInput($event, pat, 'phone')"
                   type="tel"
                   inputmode="tel"
                   maxlength="24"
                   autocomplete="off"
-                  placeholder="+7 900 000-00-00"
+                  placeholder="+7 (900) 000-00-00"
                   @keydown.enter.prevent="savePatient"
                 />
               </label>

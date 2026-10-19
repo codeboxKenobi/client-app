@@ -25,6 +25,13 @@ const routes = [
           ),
       },
       {
+        path: "patients",
+        name: "patients",
+        meta: { title: "Пациенты" },
+        component: () =>
+          import(/* webpackChunkName: "staff" */ "../views/PatientsView.vue"),
+      },
+      {
         path: "staff",
         name: "staff",
         meta: { title: "Персонал" },

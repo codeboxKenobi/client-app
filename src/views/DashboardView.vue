@@ -22,6 +22,12 @@ const NAV = [
     icon: "M4 5.5h12v10.5H4zM4 9h12M7.5 3.5v3M12.5 3.5v3",
   },
   {
+    name: "patients",
+    to: "/dashboard/patients",
+    label: "Пациенты",
+    icon: "M7.5 9a2.75 2.75 0 1 0 0-5.5 2.75 2.75 0 0 0 0 5.5zM2.5 16c0-2.8 2.2-4.5 5-4.5s5 1.7 5 4.5M13 4a2.5 2.5 0 0 1 0 5M14 11.8c1.9.5 3.5 1.9 3.5 4.2",
+  },
+  {
     name: "staff",
     to: "/dashboard/staff",
     label: "Персонал",

@@ -52,27 +52,39 @@ const TEETH_STATUSES = [
   { code: "Имп", label: "Имплант" },
   { code: "О", label: "Отсутствует" },
 ];
-const STATUS_ORDER = ["", ...TEETH_STATUSES.map((s) => s.code)];
 const toothLabel = (code) =>
   TEETH_STATUSES.find((s) => s.code === code)?.label ?? "Здоров";
 
-// Нумерация зубов по ФДИ: верхняя и нижняя челюсть, правая и левая половины
+// Нумерация зубов по ФДИ. Четыре квадранта в порядке зубной формулы:
+// верхняя правая, верхняя левая, нижняя правая, нижняя левая
 const range = (a, b) =>
   Array.from({ length: Math.abs(b - a) + 1 }, (_, i) =>
     a <= b ? a + i : a - i
   );
-const JAWS = [
+const TEETH_SETS = [
   {
-    id: "upper",
-    label: "Верхняя челюсть",
-    halves: [range(18, 11), range(21, 28)],
+    id: "perm",
+    label: "Постоянные",
+    quads: [
+      { id: "ur", label: "Верхняя правая", teeth: range(18, 11) },
+      { id: "ul", label: "Верхняя левая", teeth: range(21, 28) },
+      { id: "lr", label: "Нижняя правая", teeth: range(48, 41) },
+      { id: "ll", label: "Нижняя левая", teeth: range(31, 38) },
+    ],
   },
   {
-    id: "lower",
-    label: "Нижняя челюсть",
-    halves: [range(48, 41), range(31, 38)],
+    id: "milk",
+    label: "Молочные",
+    quads: [
+      { id: "ur", label: "Верхняя правая", teeth: range(55, 51) },
+      { id: "ul", label: "Верхняя левая", teeth: range(61, 65) },
+      { id: "lr", label: "Нижняя правая", teeth: range(85, 81) },
+      { id: "ll", label: "Нижняя левая", teeth: range(71, 75) },
+    ],
   },
 ];
+// Кисть для редактирования формулы: пустой код — «Здоров» (ластик)
+const PALETTE = [{ code: "", label: "Здоров" }, ...TEETH_STATUSES];
 
 const props = defineProps({
   patients: {
@@ -349,6 +361,36 @@ const hasFilters = computed(() => activeFilterCount.value > 0);
 /* ---------- Подробности ---------- */
 const detailTarget = ref(null);
 
+/* ---------- Зубная карта ---------- */
+const teethSet = ref("perm"); // какой набор показан: постоянные или молочные
+const activeSet = computed(
+  () => TEETH_SETS.find((t) => t.id === teethSet.value) ?? TEETH_SETS[0]
+);
+const selectedTooth = ref(null); // выбранный зуб в подробностях
+const activeStatus = ref("К"); // выбранная отметка в форме
+const isChild = (p) =>
+  !!p?.birthDate && parseInt(ageLabel(p.birthDate), 10) < 12;
+
+// детям сразу показываем молочные зубы
+watch(detailTarget, (p) => {
+  if (p) {
+    teethSet.value = isChild(p) ? "milk" : "perm";
+    selectedTooth.value = null;
+  }
+});
+
+function teethCounts(teeth) {
+  const c = {};
+  for (const v of Object.values(teeth ?? {})) c[v] = (c[v] || 0) + 1;
+  return c;
+}
+function toothCaption(p) {
+  const n = selectedTooth.value;
+  return n
+    ? `Зуб ${n} — ${toothLabel(p.teeth?.[n])}`
+    : "Нажмите на зуб, чтобы увидеть отметку";
+}
+
 function detailSections(p) {
   return [
     {
@@ -447,6 +489,8 @@ function openCreate() {
   editingId.value = null;
   Object.assign(form, emptyForm());
   clearErrors();
+  teethSet.value = "perm";
+  activeStatus.value = "К";
   modalOpen.value = true;
 }
 
@@ -458,6 +502,8 @@ function openEdit(p) {
   });
   clearErrors();
   detailTarget.value = null;
+  teethSet.value = isChild(p) ? "milk" : "perm";
+  activeStatus.value = "К";
   modalOpen.value = true;
 }
 
@@ -465,12 +511,14 @@ function closeModal() {
   modalOpen.value = false;
 }
 
-function cycleTooth(n) {
-  const cur = form.teeth[n] || "";
-  const next =
-    STATUS_ORDER[(STATUS_ORDER.indexOf(cur) + 1) % STATUS_ORDER.length];
-  if (next) form.teeth[n] = next;
-  else delete form.teeth[n];
+// Нажатие на зуб ставит выбранную отметку; повторное нажатие той же отметкой снимает её
+function applyTooth(n) {
+  if (!activeStatus.value || form.teeth[n] === activeStatus.value)
+    delete form.teeth[n];
+  else form.teeth[n] = activeStatus.value;
+}
+function clearTeeth() {
+  for (const k of Object.keys(form.teeth)) delete form.teeth[k];
 }
 
 function validate() {
@@ -657,13 +705,65 @@ function onDpKeydown(e) {
   }
 }
 
+/* ---------- Окно «Подробнее»: фокус и закрытие ---------- */
+const detailEl = ref(null);
+let detailReturn = null;
+
+function openDetails(p, e) {
+  detailReturn = e?.currentTarget ?? null;
+  detailTarget.value = p;
+  nextTick(() => detailEl.value?.focus({ preventScroll: true }));
+}
+function closeDetails() {
+  detailTarget.value = null;
+  // фокус возвращается на кнопку «Подробнее», если дальше не открылась форма
+  nextTick(() => {
+    if (!modalOpen.value) detailReturn?.focus?.({ preventScroll: true });
+  });
+}
+// Tab не уходит из окна
+function onDetailKeydown(e) {
+  if (e.key !== "Tab" || !detailEl.value) return;
+  const nodes = [...detailEl.value.querySelectorAll("button:not([disabled])")];
+  if (!nodes.length) return;
+  const first = nodes[0],
+    last = nodes[nodes.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || active === detailEl.value)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+/* ---------- Пока открыто окно, страница под ним не прокручивается ---------- */
+const anyOpen = computed(
+  () =>
+    !!(detailTarget.value || modalOpen.value || deleteTarget.value || dp.open)
+);
+let prevBodyOverflow = "";
+watch(anyOpen, (open) => {
+  if (typeof document === "undefined") return;
+  if (open) {
+    prevBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+  } else {
+    document.body.style.overflow = prevBodyOverflow;
+  }
+});
+onBeforeUnmount(() => {
+  if (anyOpen.value) document.body.style.overflow = prevBodyOverflow;
+});
+
 /* ---------- Esc закрывает верхнее открытое окно ---------- */
 function onKeydown(e) {
   if (e.key !== "Escape") return;
   if (dp.open) closeDatePicker();
   else if (deleteTarget.value) deleteTarget.value = null;
   else if (modalOpen.value) closeModal();
-  else if (detailTarget.value) detailTarget.value = null;
+  else if (detailTarget.value) closeDetails();
 }
 onMounted(() => {
   // на планшетах и телефонах (до 1024px) панель фильтров свёрнута
@@ -851,7 +951,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             <button
               class="btn btn--primary card__more"
               type="button"
-              @click="detailTarget = p"
+              @click="openDetails(p, $event)"
             >
               Подробнее
             </button>
@@ -870,22 +970,25 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       </div>
     </section>
 
-    <!-- Подробности пациента -->
+    <!-- Подробности пациента: шапка и кнопки закреплены, прокручивается только содержимое -->
     <div
       v-if="detailTarget"
-      class="overlay"
-      @mousedown.self="detailTarget = null"
+      class="overlay overlay--detail"
+      @mousedown.self="closeDetails"
     >
       <div
-        class="modal modal--wide"
+        ref="detailEl"
+        class="detail"
         role="dialog"
         aria-modal="true"
-        :aria-label="`Карта пациента: ${detailTarget.fullName}`"
+        aria-labelledby="detail-title"
+        tabindex="-1"
+        @keydown="onDetailKeydown"
       >
         <header class="detail__head">
           <div class="avatar">{{ initials(detailTarget.fullName) }}</div>
           <div class="detail__title">
-            <h2>{{ detailTarget.fullName }}</h2>
+            <h2 id="detail-title">{{ detailTarget.fullName }}</h2>
             <span class="muted">
               Медицинская карта стоматологического больного №
               {{ detailTarget.cardNumber }}
@@ -895,7 +998,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             class="btn btn--icon"
             type="button"
             aria-label="Закрыть"
-            @click="detailTarget = null"
+            @click="closeDetails"
           >
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
               <path
@@ -909,62 +1012,88 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           </button>
         </header>
 
-        <section
-          v-for="s in detailSections(detailTarget)"
-          :key="s.title"
-          class="dsec"
-        >
-          <h3 class="dsec__title">{{ s.title }}</h3>
-          <dl class="dgrid">
-            <div
-              v-for="r in s.rows"
-              :key="r.l"
-              :class="{ dgrid__full: r.full }"
-            >
-              <dt>{{ r.l }}</dt>
-              <dd>{{ dash(r.v) }}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="dsec">
-          <h3 class="dsec__title">Зубная формула</h3>
-          <div class="teeth" role="group" aria-label="Зубная формула">
-            <div class="teeth__rows">
+        <div class="detail__body">
+          <section
+            v-for="s in detailSections(detailTarget)"
+            :key="s.title"
+            class="dsec"
+          >
+            <h3 class="dsec__title">{{ s.title }}</h3>
+            <dl class="dgrid">
               <div
-                v-for="jaw in JAWS"
-                :key="jaw.id"
-                class="teeth__jaw"
-                :aria-label="jaw.label"
+                v-for="r in s.rows"
+                :key="r.l"
+                :class="{ dgrid__full: r.full }"
               >
-                <div
-                  v-for="(half, hi) in jaw.halves"
-                  :key="hi"
-                  class="teeth__half"
-                >
-                  <div
-                    v-for="n in half"
-                    :key="n"
-                    class="tooth"
-                    :data-s="detailTarget.teeth?.[n] || ''"
-                    :title="`Зуб ${n}: ${toothLabel(detailTarget.teeth?.[n])}`"
+                <dt>{{ r.l }}</dt>
+                <dd>{{ dash(r.v) }}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="dsec">
+            <h3 class="dsec__title">Зубная формула</h3>
+            <div class="teeth">
+              <div class="teeth__bar">
+                <div class="seg" role="group" aria-label="Тип зубов">
+                  <button
+                    v-for="t in TEETH_SETS"
+                    :key="t.id"
+                    type="button"
+                    :aria-pressed="teethSet === t.id ? 'true' : 'false'"
+                    @click="
+                      teethSet = t.id;
+                      selectedTooth = null;
+                    "
                   >
-                    <small>{{ n }}</small>
-                    <span>{{ detailTarget.teeth?.[n] || "·" }}</span>
+                    {{ t.label }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="teeth__grid">
+                <div v-for="q in activeSet.quads" :key="q.id" class="quad">
+                  <span class="quad__cap">{{ q.label }}</span>
+                  <div class="quad__row">
+                    <button
+                      v-for="n in q.teeth"
+                      :key="n"
+                      type="button"
+                      class="tooth"
+                      :class="{ 'is-selected': selectedTooth === n }"
+                      :data-s="detailTarget.teeth?.[n] || ''"
+                      :aria-label="`Зуб ${n}: ${toothLabel(
+                        detailTarget.teeth?.[n]
+                      )}`"
+                      :aria-pressed="selectedTooth === n ? 'true' : 'false'"
+                      @click="selectedTooth = n"
+                    >
+                      <small>{{ n }}</small>
+                      <span>{{ detailTarget.teeth?.[n] || "·" }}</span>
+                    </button>
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-          <ul class="legend">
-            <li v-for="s in TEETH_STATUSES" :key="s.code">
-              <b>{{ s.code }}</b> {{ s.label }}
-            </li>
-            <li><b>·</b> Здоров</li>
-          </ul>
-        </section>
 
-        <div class="modal__footer">
+              <p class="teeth__caption" aria-live="polite">
+                {{ toothCaption(detailTarget) }}
+              </p>
+            </div>
+
+            <ul class="legend">
+              <li v-for="s in TEETH_STATUSES" :key="s.code">
+                <i :data-s="s.code">{{ s.code }}</i>
+                {{ s.label
+                }}<template v-if="teethCounts(detailTarget.teeth)[s.code]">
+                  : {{ teethCounts(detailTarget.teeth)[s.code] }}</template
+                >
+              </li>
+              <li><i>·</i> Здоров</li>
+            </ul>
+          </section>
+        </div>
+
+        <footer class="detail__foot">
           <button
             class="btn btn--ghost"
             type="button"
@@ -972,470 +1101,544 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           >
             Редактировать
           </button>
-          <button
-            class="btn btn--primary"
-            type="button"
-            @click="detailTarget = null"
-          >
+          <button class="btn btn--primary" type="button" @click="closeDetails">
             Закрыть
           </button>
-        </div>
+        </footer>
       </div>
     </div>
 
     <!-- Создание / редактирование -->
-    <div v-if="modalOpen" class="overlay" @mousedown.self="closeModal">
+    <div
+      v-if="modalOpen"
+      class="overlay overlay--detail"
+      @mousedown.self="closeModal"
+    >
       <form
-        class="modal modal--wide modal--form"
+        class="detail detail--form"
         role="dialog"
         aria-modal="true"
-        :aria-label="
-          editingId === null ? 'Новый пациент' : 'Редактирование пациента'
-        "
+        aria-labelledby="form-title"
         novalidate
         @submit.prevent="save"
       >
-        <h2>
-          {{ editingId === null ? "Новый пациент" : "Редактирование пациента" }}
-        </h2>
-
-        <h3 class="modal__section">Общие сведения</h3>
-
-        <label class="field field--full">
-          <span>ФИО</span>
-          <input
-            v-model="form.fullName"
-            class="input"
-            :class="{ 'input--error': errors.fullName }"
-            type="text"
-            placeholder="Иванов Иван Иванович"
-            autocomplete="off"
-            autofocus
-            @input="delete errors.fullName"
-          />
-          <small v-if="errors.fullName" class="error">{{
-            errors.fullName
-          }}</small>
-        </label>
-
-        <label class="field">
-          <span>Пол</span>
-          <select
-            v-model="form.gender"
-            class="input"
-            :class="{ 'input--error': errors.gender }"
-            @change="delete errors.gender"
-          >
-            <option value="" disabled>Выберите пол</option>
-            <option v-for="g in GENDERS" :key="g" :value="g">{{ g }}</option>
-          </select>
-          <small v-if="errors.gender" class="error">{{ errors.gender }}</small>
-        </label>
-
-        <label class="field">
-          <span>Дата рождения</span>
+        <header class="detail__head">
+          <div class="detail__title">
+            <h2 id="form-title">
+              {{
+                editingId === null ? "Новый пациент" : "Редактирование пациента"
+              }}
+            </h2>
+          </div>
           <button
+            class="btn btn--icon"
             type="button"
-            class="input datebtn"
-            :class="{
-              'input--error': errors.birthDate,
-              'datebtn--empty': !form.birthDate,
-            }"
-            :aria-label="`Дата рождения: ${
-              form.birthDate ? fmt(form.birthDate) : 'не задана'
-            }`"
-            @click="openDatePicker('birthDate', 'Дата рождения', $event)"
+            aria-label="Закрыть"
+            @click="closeModal"
           >
-            <span>{{
-              form.birthDate ? fmt(form.birthDate) : "Выбрать дату"
-            }}</span>
-            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
-              <rect
-                x="3.5"
-                y="4.5"
-                width="13"
-                height="12"
-                rx="2"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.7"
-              />
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
               <path
-                d="M3.5 8.5h13M7 3v3M13 3v3"
+                d="m5 5 10 10M15 5 5 15"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.7"
+                stroke-width="1.8"
                 stroke-linecap="round"
               />
             </svg>
           </button>
-          <small v-if="errors.birthDate" class="error">{{
-            errors.birthDate
-          }}</small>
-        </label>
+        </header>
 
-        <label class="field">
-          <span>Номер телефона</span>
-          <input
-            :value="form.phone"
-            class="input"
-            :class="{ 'input--error': errors.phone }"
-            type="tel"
-            inputmode="tel"
-            autocomplete="off"
-            maxlength="18"
-            placeholder="+7 (900) 000-00-00"
-            @input="maskInput($event, formatPhone, 'phone')"
-          />
-          <small v-if="errors.phone" class="error">{{ errors.phone }}</small>
-        </label>
+        <div class="detail__body">
+          <div class="fgrid">
+            <h3 class="modal__section">Общие сведения</h3>
 
-        <label class="field">
-          <span>Email</span>
-          <input
-            v-model="form.email"
-            class="input"
-            :class="{ 'input--error': errors.email }"
-            type="email"
-            placeholder="name@example.ru"
-            @input="delete errors.email"
-          />
-          <small v-if="errors.email" class="error">{{ errors.email }}</small>
-        </label>
-
-        <label class="field field--full">
-          <span>Адрес</span>
-          <input
-            v-model="form.address"
-            class="input"
-            type="text"
-            maxlength="200"
-            placeholder="Город, улица, дом, квартира"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="field field--full">
-          <span>Место работы, профессия</span>
-          <input
-            v-model="form.workplace"
-            class="input"
-            type="text"
-            maxlength="120"
-            placeholder="Необязательно"
-            autocomplete="off"
-          />
-        </label>
-
-        <h3 class="modal__section">Паспорт и документы</h3>
-
-        <label class="field">
-          <span>Серия паспорта</span>
-          <input
-            :value="form.passportSeries"
-            class="input"
-            :class="{ 'input--error': errors.passportSeries }"
-            type="text"
-            inputmode="numeric"
-            maxlength="4"
-            placeholder="0000"
-            autocomplete="off"
-            @input="maskInput($event, fmtSeries, 'passportSeries')"
-          />
-          <small v-if="errors.passportSeries" class="error">{{
-            errors.passportSeries
-          }}</small>
-        </label>
-
-        <label class="field">
-          <span>Номер паспорта</span>
-          <input
-            :value="form.passportNumber"
-            class="input"
-            :class="{ 'input--error': errors.passportNumber }"
-            type="text"
-            inputmode="numeric"
-            maxlength="6"
-            placeholder="000000"
-            autocomplete="off"
-            @input="maskInput($event, fmtNumber, 'passportNumber')"
-          />
-          <small v-if="errors.passportNumber" class="error">{{
-            errors.passportNumber
-          }}</small>
-        </label>
-
-        <label class="field">
-          <span>Дата выдачи</span>
-          <button
-            type="button"
-            class="input datebtn"
-            :class="{ 'datebtn--empty': !form.passportIssueDate }"
-            :aria-label="`Дата выдачи паспорта: ${
-              form.passportIssueDate ? fmt(form.passportIssueDate) : 'не задана'
-            }`"
-            @click="
-              openDatePicker(
-                'passportIssueDate',
-                'Дата выдачи паспорта',
-                $event
-              )
-            "
-          >
-            <span>{{
-              form.passportIssueDate
-                ? fmt(form.passportIssueDate)
-                : "Выбрать дату"
-            }}</span>
-            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
-              <rect
-                x="3.5"
-                y="4.5"
-                width="13"
-                height="12"
-                rx="2"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.7"
+            <label class="field field--full">
+              <span>ФИО</span>
+              <input
+                v-model="form.fullName"
+                class="input"
+                :class="{ 'input--error': errors.fullName }"
+                type="text"
+                placeholder="Иванов Иван Иванович"
+                autocomplete="off"
+                autofocus
+                @input="delete errors.fullName"
               />
-              <path
-                d="M3.5 8.5h13M7 3v3M13 3v3"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"
-              />
-            </svg>
-          </button>
-        </label>
+              <small v-if="errors.fullName" class="error">{{
+                errors.fullName
+              }}</small>
+            </label>
 
-        <label class="field">
-          <span>Код подразделения</span>
-          <input
-            :value="form.passportDepartmentCode"
-            class="input"
-            :class="{ 'input--error': errors.passportDepartmentCode }"
-            type="text"
-            inputmode="numeric"
-            maxlength="7"
-            placeholder="000-000"
-            autocomplete="off"
-            @input="maskInput($event, fmtCode, 'passportDepartmentCode')"
-          />
-          <small v-if="errors.passportDepartmentCode" class="error">{{
-            errors.passportDepartmentCode
-          }}</small>
-        </label>
-
-        <label class="field field--full">
-          <span>Кем выдан</span>
-          <input
-            v-model="form.passportIssuedBy"
-            class="input"
-            type="text"
-            maxlength="200"
-            placeholder="Название органа, выдавшего паспорт"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="field">
-          <span>СНИЛС</span>
-          <input
-            :value="form.snils"
-            class="input"
-            :class="{ 'input--error': errors.snils }"
-            type="text"
-            inputmode="numeric"
-            maxlength="14"
-            placeholder="000-000-000 00"
-            autocomplete="off"
-            @input="maskInput($event, fmtSnils, 'snils')"
-          />
-          <small v-if="errors.snils" class="error">{{ errors.snils }}</small>
-        </label>
-
-        <label class="field">
-          <span>Полис ОМС</span>
-          <input
-            :value="form.oms"
-            class="input"
-            :class="{ 'input--error': errors.oms }"
-            type="text"
-            inputmode="numeric"
-            maxlength="16"
-            placeholder="16 цифр"
-            autocomplete="off"
-            @input="maskInput($event, fmtOms, 'oms')"
-          />
-          <small v-if="errors.oms" class="error">{{ errors.oms }}</small>
-        </label>
-
-        <h3 class="modal__section">Медицинские данные</h3>
-
-        <label class="field field--full">
-          <span>Аллергии</span>
-          <input
-            v-model="form.allergies"
-            class="input"
-            type="text"
-            maxlength="200"
-            placeholder="Препарат и реакция. Оставьте пустым, если нет"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="field field--full">
-          <span>Сопутствующие заболевания</span>
-          <textarea
-            v-model="form.concomitant"
-            class="input input--area"
-            rows="2"
-            maxlength="500"
-            placeholder="Перенесённые и хронические заболевания"
-          ></textarea>
-        </label>
-
-        <label class="field field--full">
-          <span>Жалобы</span>
-          <textarea
-            v-model="form.complaints"
-            class="input input--area"
-            rows="2"
-            maxlength="500"
-            placeholder="Со слов пациента"
-          ></textarea>
-        </label>
-
-        <label class="field field--full">
-          <span>Развитие заболевания</span>
-          <textarea
-            v-model="form.history"
-            class="input input--area"
-            rows="2"
-            maxlength="500"
-            placeholder="Когда появились первые проявления, чем лечился"
-          ></textarea>
-        </label>
-
-        <label class="field field--full">
-          <span>Диагноз</span>
-          <input
-            v-model="form.diagnosis"
-            class="input"
-            type="text"
-            maxlength="200"
-            placeholder="Например, средний кариес зуба 26"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="field field--full">
-          <span>План лечения</span>
-          <textarea
-            v-model="form.treatmentPlan"
-            class="input input--area"
-            rows="2"
-            maxlength="500"
-            placeholder="Этапы лечения и профилактики"
-          ></textarea>
-        </label>
-
-        <h3 class="modal__section">Осмотр</h3>
-
-        <label class="field">
-          <span>Прикус</span>
-          <select v-model="form.bite" class="input">
-            <option value="">Не указан</option>
-            <option v-for="b in BITES" :key="b" :value="b">{{ b }}</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>Цвет по шкале Vita</span>
-          <select v-model="form.vitaShade" class="input">
-            <option value="">Не указан</option>
-            <option v-for="v in VITA" :key="v" :value="v">{{ v }}</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>Гигиенический индекс (ГИ)</span>
-          <input
-            v-model="form.hygieneIndex"
-            class="input"
-            type="text"
-            inputmode="decimal"
-            maxlength="5"
-            placeholder="Например, 1,4"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="field">
-          <span>Индекс РМА, %</span>
-          <input
-            v-model="form.pma"
-            class="input"
-            type="text"
-            inputmode="decimal"
-            maxlength="5"
-            placeholder="Например, 12"
-            autocomplete="off"
-          />
-        </label>
-
-        <h3 class="modal__section">Зубная формула</h3>
-
-        <div class="field--full">
-          <p class="helper">
-            Нажимайте на зуб, чтобы менять отметку: здоров, кариес, пломба и
-            далее по кругу.
-          </p>
-          <div class="teeth" role="group" aria-label="Зубная формула">
-            <div class="teeth__rows">
-              <div
-                v-for="jaw in JAWS"
-                :key="jaw.id"
-                class="teeth__jaw"
-                :aria-label="jaw.label"
+            <label class="field">
+              <span>Пол</span>
+              <select
+                v-model="form.gender"
+                class="input"
+                :class="{ 'input--error': errors.gender }"
+                @change="delete errors.gender"
               >
-                <div
-                  v-for="(half, hi) in jaw.halves"
-                  :key="hi"
-                  class="teeth__half"
+                <option value="" disabled>Выберите пол</option>
+                <option v-for="g in GENDERS" :key="g" :value="g">
+                  {{ g }}
+                </option>
+              </select>
+              <small v-if="errors.gender" class="error">{{
+                errors.gender
+              }}</small>
+            </label>
+
+            <label class="field">
+              <span>Дата рождения</span>
+              <button
+                type="button"
+                class="input datebtn"
+                :class="{
+                  'input--error': errors.birthDate,
+                  'datebtn--empty': !form.birthDate,
+                }"
+                :aria-label="`Дата рождения: ${
+                  form.birthDate ? fmt(form.birthDate) : 'не задана'
+                }`"
+                @click="openDatePicker('birthDate', 'Дата рождения', $event)"
+              >
+                <span>{{
+                  form.birthDate ? fmt(form.birthDate) : "Выбрать дату"
+                }}</span>
+                <svg
+                  viewBox="0 0 20 20"
+                  width="20"
+                  height="20"
+                  aria-hidden="true"
                 >
+                  <rect
+                    x="3.5"
+                    y="4.5"
+                    width="13"
+                    height="12"
+                    rx="2"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                  />
+                  <path
+                    d="M3.5 8.5h13M7 3v3M13 3v3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+              <small v-if="errors.birthDate" class="error">{{
+                errors.birthDate
+              }}</small>
+            </label>
+
+            <label class="field">
+              <span>Номер телефона</span>
+              <input
+                :value="form.phone"
+                class="input"
+                :class="{ 'input--error': errors.phone }"
+                type="tel"
+                inputmode="tel"
+                autocomplete="off"
+                maxlength="18"
+                placeholder="+7 (900) 000-00-00"
+                @input="maskInput($event, formatPhone, 'phone')"
+              />
+              <small v-if="errors.phone" class="error">{{
+                errors.phone
+              }}</small>
+            </label>
+
+            <label class="field">
+              <span>Email</span>
+              <input
+                v-model="form.email"
+                class="input"
+                :class="{ 'input--error': errors.email }"
+                type="email"
+                placeholder="name@example.ru"
+                @input="delete errors.email"
+              />
+              <small v-if="errors.email" class="error">{{
+                errors.email
+              }}</small>
+            </label>
+
+            <label class="field field--full">
+              <span>Адрес</span>
+              <input
+                v-model="form.address"
+                class="input"
+                type="text"
+                maxlength="200"
+                placeholder="Город, улица, дом, квартира"
+                autocomplete="off"
+              />
+            </label>
+
+            <label class="field field--full">
+              <span>Место работы, профессия</span>
+              <input
+                v-model="form.workplace"
+                class="input"
+                type="text"
+                maxlength="120"
+                placeholder="Необязательно"
+                autocomplete="off"
+              />
+            </label>
+
+            <h3 class="modal__section">Паспорт и документы</h3>
+
+            <div class="pair field--full">
+              <label class="field">
+                <span>Серия паспорта</span>
+                <input
+                  :value="form.passportSeries"
+                  class="input"
+                  :class="{ 'input--error': errors.passportSeries }"
+                  type="text"
+                  inputmode="numeric"
+                  maxlength="4"
+                  placeholder="0000"
+                  autocomplete="off"
+                  @input="maskInput($event, fmtSeries, 'passportSeries')"
+                />
+                <small v-if="errors.passportSeries" class="error">{{
+                  errors.passportSeries
+                }}</small>
+              </label>
+
+              <label class="field">
+                <span>Номер паспорта</span>
+                <input
+                  :value="form.passportNumber"
+                  class="input"
+                  :class="{ 'input--error': errors.passportNumber }"
+                  type="text"
+                  inputmode="numeric"
+                  maxlength="6"
+                  placeholder="000000"
+                  autocomplete="off"
+                  @input="maskInput($event, fmtNumber, 'passportNumber')"
+                />
+                <small v-if="errors.passportNumber" class="error">{{
+                  errors.passportNumber
+                }}</small>
+              </label>
+            </div>
+
+            <label class="field">
+              <span>Дата выдачи</span>
+              <button
+                type="button"
+                class="input datebtn"
+                :class="{ 'datebtn--empty': !form.passportIssueDate }"
+                :aria-label="`Дата выдачи паспорта: ${
+                  form.passportIssueDate
+                    ? fmt(form.passportIssueDate)
+                    : 'не задана'
+                }`"
+                @click="
+                  openDatePicker(
+                    'passportIssueDate',
+                    'Дата выдачи паспорта',
+                    $event
+                  )
+                "
+              >
+                <span>{{
+                  form.passportIssueDate
+                    ? fmt(form.passportIssueDate)
+                    : "Выбрать дату"
+                }}</span>
+                <svg
+                  viewBox="0 0 20 20"
+                  width="20"
+                  height="20"
+                  aria-hidden="true"
+                >
+                  <rect
+                    x="3.5"
+                    y="4.5"
+                    width="13"
+                    height="12"
+                    rx="2"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                  />
+                  <path
+                    d="M3.5 8.5h13M7 3v3M13 3v3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+            </label>
+
+            <label class="field">
+              <span>Код подразделения</span>
+              <input
+                :value="form.passportDepartmentCode"
+                class="input"
+                :class="{ 'input--error': errors.passportDepartmentCode }"
+                type="text"
+                inputmode="numeric"
+                maxlength="7"
+                placeholder="000-000"
+                autocomplete="off"
+                @input="maskInput($event, fmtCode, 'passportDepartmentCode')"
+              />
+              <small v-if="errors.passportDepartmentCode" class="error">{{
+                errors.passportDepartmentCode
+              }}</small>
+            </label>
+
+            <label class="field field--full">
+              <span>Кем выдан</span>
+              <input
+                v-model="form.passportIssuedBy"
+                class="input"
+                type="text"
+                maxlength="200"
+                placeholder="Название органа, выдавшего паспорт"
+                autocomplete="off"
+              />
+            </label>
+
+            <label class="field">
+              <span>СНИЛС</span>
+              <input
+                :value="form.snils"
+                class="input"
+                :class="{ 'input--error': errors.snils }"
+                type="text"
+                inputmode="numeric"
+                maxlength="14"
+                placeholder="000-000-000 00"
+                autocomplete="off"
+                @input="maskInput($event, fmtSnils, 'snils')"
+              />
+              <small v-if="errors.snils" class="error">{{
+                errors.snils
+              }}</small>
+            </label>
+
+            <label class="field">
+              <span>Полис ОМС</span>
+              <input
+                :value="form.oms"
+                class="input"
+                :class="{ 'input--error': errors.oms }"
+                type="text"
+                inputmode="numeric"
+                maxlength="16"
+                placeholder="16 цифр"
+                autocomplete="off"
+                @input="maskInput($event, fmtOms, 'oms')"
+              />
+              <small v-if="errors.oms" class="error">{{ errors.oms }}</small>
+            </label>
+
+            <h3 class="modal__section">Медицинские данные</h3>
+
+            <label class="field field--full">
+              <span>Аллергии</span>
+              <input
+                v-model="form.allergies"
+                class="input"
+                type="text"
+                maxlength="200"
+                placeholder="Препарат и реакция. Оставьте пустым, если нет"
+                autocomplete="off"
+              />
+            </label>
+
+            <label class="field field--full">
+              <span>Сопутствующие заболевания</span>
+              <textarea
+                v-model="form.concomitant"
+                class="input input--area"
+                rows="2"
+                maxlength="500"
+                placeholder="Перенесённые и хронические заболевания"
+              ></textarea>
+            </label>
+
+            <label class="field field--full">
+              <span>Жалобы</span>
+              <textarea
+                v-model="form.complaints"
+                class="input input--area"
+                rows="2"
+                maxlength="500"
+                placeholder="Со слов пациента"
+              ></textarea>
+            </label>
+
+            <label class="field field--full">
+              <span>Развитие заболевания</span>
+              <textarea
+                v-model="form.history"
+                class="input input--area"
+                rows="2"
+                maxlength="500"
+                placeholder="Когда появились первые проявления, чем лечился"
+              ></textarea>
+            </label>
+
+            <label class="field field--full">
+              <span>Диагноз</span>
+              <input
+                v-model="form.diagnosis"
+                class="input"
+                type="text"
+                maxlength="200"
+                placeholder="Например, средний кариес зуба 26"
+                autocomplete="off"
+              />
+            </label>
+
+            <label class="field field--full">
+              <span>План лечения</span>
+              <textarea
+                v-model="form.treatmentPlan"
+                class="input input--area"
+                rows="2"
+                maxlength="500"
+                placeholder="Этапы лечения и профилактики"
+              ></textarea>
+            </label>
+
+            <h3 class="modal__section">Осмотр</h3>
+
+            <label class="field">
+              <span>Прикус</span>
+              <select v-model="form.bite" class="input">
+                <option value="">Не указан</option>
+                <option v-for="b in BITES" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Цвет по шкале Vita</span>
+              <select v-model="form.vitaShade" class="input">
+                <option value="">Не указан</option>
+                <option v-for="v in VITA" :key="v" :value="v">{{ v }}</option>
+              </select>
+            </label>
+
+            <div class="pair field--full">
+              <label class="field">
+                <span>Гигиенический индекс (ГИ)</span>
+                <input
+                  v-model="form.hygieneIndex"
+                  class="input"
+                  type="text"
+                  inputmode="decimal"
+                  maxlength="5"
+                  placeholder="Например, 1,4"
+                  autocomplete="off"
+                />
+              </label>
+
+              <label class="field">
+                <span>Индекс РМА, %</span>
+                <input
+                  v-model="form.pma"
+                  class="input"
+                  type="text"
+                  inputmode="decimal"
+                  maxlength="5"
+                  placeholder="Например, 12"
+                  autocomplete="off"
+                />
+              </label>
+            </div>
+
+            <h3 class="modal__section">Зубная формула</h3>
+
+            <div class="field--full teeth">
+              <p class="helper">
+                Выберите отметку, затем нажимайте на зубы. Повторное нажатие той
+                же отметкой снимает её.
+              </p>
+
+              <div class="teeth__bar">
+                <div class="seg" role="group" aria-label="Тип зубов">
                   <button
-                    v-for="n in half"
-                    :key="n"
+                    v-for="t in TEETH_SETS"
+                    :key="t.id"
                     type="button"
-                    class="tooth"
-                    :data-s="form.teeth[n] || ''"
-                    :aria-label="`Зуб ${n}: ${toothLabel(form.teeth[n])}`"
-                    :title="`Зуб ${n}: ${toothLabel(form.teeth[n])}`"
-                    @click="cycleTooth(n)"
+                    :aria-pressed="teethSet === t.id ? 'true' : 'false'"
+                    @click="teethSet = t.id"
                   >
-                    <small>{{ n }}</small>
-                    <span>{{ form.teeth[n] || "·" }}</span>
+                    {{ t.label }}
                   </button>
                 </div>
+                <button
+                  type="button"
+                  class="btn btn--ghost btn--sm"
+                  :disabled="!Object.keys(form.teeth).length"
+                  @click="clearTeeth"
+                >
+                  Очистить формулу
+                </button>
               </div>
+
+              <div class="palette" role="group" aria-label="Отметка">
+                <button
+                  v-for="s in PALETTE"
+                  :key="s.code"
+                  type="button"
+                  class="pal"
+                  :aria-pressed="activeStatus === s.code ? 'true' : 'false'"
+                  @click="activeStatus = s.code"
+                >
+                  <i :data-s="s.code">{{ s.code || "·" }}</i>
+                  {{ s.label }}
+                </button>
+              </div>
+
+              <div class="teeth__grid">
+                <div v-for="q in activeSet.quads" :key="q.id" class="quad">
+                  <span class="quad__cap">{{ q.label }}</span>
+                  <div class="quad__row">
+                    <button
+                      v-for="n in q.teeth"
+                      :key="n"
+                      type="button"
+                      class="tooth"
+                      :data-s="form.teeth[n] || ''"
+                      :aria-label="`Зуб ${n}: ${toothLabel(form.teeth[n])}`"
+                      @click="applyTooth(n)"
+                    >
+                      <small>{{ n }}</small>
+                      <span>{{ form.teeth[n] || "·" }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <p class="teeth__caption" aria-live="polite">
+                Отмечено зубов: {{ Object.keys(form.teeth).length }}
+              </p>
             </div>
           </div>
-          <ul class="legend">
-            <li v-for="s in TEETH_STATUSES" :key="s.code">
-              <b>{{ s.code }}</b> {{ s.label }}
-            </li>
-            <li><b>·</b> Здоров</li>
-          </ul>
         </div>
 
-        <div class="modal__footer field--full">
+        <footer class="detail__foot">
           <button type="button" class="btn btn--ghost" @click="closeModal">
             Отмена
           </button>
           <button type="submit" class="btn btn--primary">Сохранить</button>
-        </div>
+        </footer>
       </form>
     </div>
 
@@ -1619,6 +1822,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   --error: #ef4444;
   --emergency: #dc2626;
 
+  color-scheme: light;
   min-height: 100%;
   padding: 24px;
   background: var(--bg);
@@ -1695,7 +1899,7 @@ h3 {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface);
+  background: var(--surface, #ffffff);
 }
 .filters__field {
   display: flex;
@@ -1717,7 +1921,7 @@ h3 {
   padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background-color: var(--surface);
+  background-color: var(--surface, #ffffff);
   color: var(--text-1);
   font: inherit;
   font-size: 14px;
@@ -1773,7 +1977,7 @@ h3 {
   font-weight: 700;
 }
 .btn:disabled {
-  background: var(--muted-bg);
+  background: var(--muted-bg, #f1f5f9);
   color: var(--text-3);
   border-color: var(--border);
   cursor: not-allowed;
@@ -1787,7 +1991,7 @@ h3 {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 20px;
 }
 .empty {
@@ -1802,7 +2006,7 @@ h3 {
 
 /* Карточка пациента */
 .card {
-  background: var(--primary-50);
+  background: var(--primary-50, #f0fdfa);
   border: 1px solid color-mix(in srgb, var(--primary-600) 35%, var(--border));
   border-left: 4px solid var(--primary-600);
   border-radius: 8px;
@@ -1921,12 +2125,12 @@ h3 {
   background: var(--primary-700);
 }
 .btn--ghost {
-  background: var(--surface);
+  background: var(--surface, #ffffff);
   color: var(--text-1);
   border-color: var(--border);
 }
 .btn--danger {
-  background: var(--surface);
+  background: var(--surface, #ffffff);
   color: var(--error);
   border-color: var(--border);
   margin-left: auto;
@@ -1949,7 +2153,7 @@ h3 {
     background: var(--primary-700);
   }
   .btn--ghost:hover:not(:disabled) {
-    background: var(--muted-bg);
+    background: var(--muted-bg, #f1f5f9);
   }
   .btn--danger:hover {
     background: color-mix(in srgb, var(--error) 10%, white);
@@ -1958,7 +2162,7 @@ h3 {
     background: #b91c1c;
   }
   .btn--icon:hover {
-    background: var(--muted-bg);
+    background: var(--muted-bg, #f1f5f9);
     color: var(--text-1);
   }
 }
@@ -1975,7 +2179,7 @@ h3 {
   appearance: none;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background-color: var(--surface);
+  background-color: var(--surface, #ffffff);
   color: var(--text-1);
   font: inherit;
   font-size: 16px;
@@ -2017,22 +2221,25 @@ select.input {
   background: rgba(15, 23, 42, 0.45);
   display: flex;
   justify-content: center;
-  padding: 16px;
+  padding: max(16px, env(safe-area-inset-top))
+    max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom))
+    max(16px, env(safe-area-inset-left));
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .modal {
   width: 100%;
   max-width: 640px;
   margin: auto; /* по центру, а если окно выше экрана — прокручивается сверху */
-  background: var(--surface);
+  background-color: #ffffff; /* запасной цвет: окно никогда не бывает прозрачным */
+  background: var(--surface, #ffffff);
+  opacity: 1;
+  isolation: isolate;
   border-radius: 14px;
   padding: 24px;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-}
-.modal--wide {
-  max-width: 760px;
 }
 .modal--small {
   max-width: 420px;
@@ -2093,20 +2300,124 @@ select.input {
   }
 }
 
-/* Подробности */
+/* Окно «Подробнее»: шапка и кнопки на месте, прокручивается только содержимое */
+.overlay--detail {
+  align-items: center;
+  overflow: hidden;
+}
+.detail {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 880px;
+  height: min(100%, 860px); /* одинаковый размер у просмотра и редактирования */
+  overflow: hidden;
+  border-radius: 14px;
+  background-color: #ffffff;
+  background: var(--surface, #ffffff);
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.3);
+  outline: none;
+  isolation: isolate;
+}
 .detail__head {
-  grid-column: 1 / -1;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 16px 16px 16px 20px;
+  border-bottom: 1px solid var(--border);
 }
 .detail__title {
   flex: 1;
   min-width: 0;
 }
 .detail__title h2 {
+  font-size: 20px;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
+.detail__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px;
+  container-type: inline-size; /* число колонок зависит от ширины окна, а не экрана */
+}
+.detail__foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+/* сетка полей формы: колонки зависят от ширины окна */
+.fgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+@container (max-width: 520px) {
+  .fgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  /* то же для браузеров без container queries */
+  .fgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.detail__body > .dsec:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.detail__body > .dsec + .dsec {
+  margin-top: 16px;
+}
+
+/* Планшеты */
+@media (max-width: 1024px) {
+  .detail {
+    max-width: 720px;
+  }
+}
+
+/* Телефоны и низкие экраны (телефон горизонтально): окно на весь экран */
+@media (max-width: 640px), (max-height: 520px) {
+  .overlay--detail {
+    padding: 0;
+  }
+  .detail {
+    max-width: none;
+    height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .detail__head {
+    padding: max(12px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right)) 12px
+      max(14px, env(safe-area-inset-left));
+  }
+  .detail__title h2 {
+    font-size: 18px;
+  }
+  .detail__body {
+    padding: 14px max(14px, env(safe-area-inset-right)) 14px
+      max(14px, env(safe-area-inset-left));
+  }
+  .detail__foot {
+    padding: 12px max(14px, env(safe-area-inset-right))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      max(14px, env(safe-area-inset-left));
+  }
+  .detail__foot .btn {
+    flex: 1;
+  }
+}
+
 .dsec {
   grid-column: 1 / -1;
   padding-top: 16px;
@@ -2142,49 +2453,212 @@ select.input {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+@container (max-width: 480px) {
+  .dgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@container (min-width: 720px) {
+  .dgrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 @media (max-width: 560px) {
+  /* то же для браузеров без container queries */
   .dgrid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-/* Зубная формула */
+/* Зубная карта */
 .teeth {
-  overflow-x: auto;
-  padding-bottom: 6px;
+  container-type: inline-size; /* раскладка зависит от ширины самой карты, а не экрана */
 }
-.teeth__rows {
-  display: grid;
-  gap: 10px;
-  width: max-content;
-}
-.teeth__jaw {
+.teeth__bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 12px;
 }
-.teeth__half {
+.btn--sm {
+  height: 36px;
+  padding: 0 12px;
+}
+
+/* Переключатель «Постоянные / Молочные» */
+.seg {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted-bg, #f1f5f9);
+}
+.seg button {
+  height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.seg button[aria-pressed="true"] {
+  background: var(--surface, #ffffff);
+  color: var(--primary-700);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.seg button:focus-visible {
+  outline: 2px solid var(--primary-600);
+  outline-offset: 1px;
+}
+
+/* Цвета отметок: общие для зубов, кисти и легенды */
+[data-s="К"] {
+  --tb: color-mix(in srgb, var(--warning) 20%, white);
+  --tc: var(--warning);
+}
+[data-s="П"] {
+  --tb: var(--primary-50, #f0fdfa);
+  --tc: var(--primary-600);
+}
+[data-s="Пт"] {
+  --tb: color-mix(in srgb, var(--emergency) 12%, white);
+  --tc: var(--emergency);
+}
+[data-s="Р"] {
+  --tb: color-mix(in srgb, var(--warning) 10%, var(--muted-bg, #f1f5f9));
+  --tc: var(--text-3);
+}
+[data-s="И"],
+[data-s="Имп"] {
+  --tb: color-mix(in srgb, var(--accent-blue) 12%, white);
+  --tc: var(--accent-blue);
+}
+[data-s="О"] {
+  --tb: var(--muted-bg, #f1f5f9);
+  --tc: var(--text-3);
+}
+
+/* Кисть */
+.palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.pal {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, #ffffff);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pal[aria-pressed="true"] {
+  border-color: var(--primary-600);
+  outline: 2px solid var(--primary-600);
+  outline-offset: 0;
+}
+.pal:focus-visible {
+  outline: 2px solid var(--primary-600);
+  outline-offset: 2px;
+}
+.pal i,
+.legend i {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--tc, var(--border));
+  border-radius: 6px;
+  background: var(--tb, var(--surface, #ffffff));
+  color: var(--text-1);
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+}
+.pal i[data-s="О"],
+.legend i[data-s="О"] {
+  border-style: dashed;
+}
+@media (hover: hover) {
+  .pal:hover {
+    background: var(--muted-bg, #f1f5f9);
+  }
+}
+
+/* Квадранты: перекрестье как в бумажной формуле */
+.teeth__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.quad {
+  min-width: 0;
+  padding: 0 0 12px;
+}
+.quad:nth-child(odd) {
+  padding-right: 10px;
+  border-right: 2px solid var(--border);
+}
+.quad:nth-child(even) {
+  padding-left: 10px;
+}
+.quad:nth-child(n + 3) {
+  padding-top: 12px;
+  padding-bottom: 0;
+  border-top: 2px solid var(--border);
+}
+.quad__cap {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.quad:nth-child(odd) .quad__cap {
+  text-align: right;
+}
+.quad__row {
   display: flex;
   gap: 3px;
 }
-.teeth__half + .teeth__half {
-  margin-left: 8px;
-  padding-left: 8px;
-  border-left: 2px solid var(--border);
+.quad:nth-child(odd) .quad__row {
+  justify-content: flex-end; /* зубы прижаты к центру, как на схеме */
 }
 .tooth {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  width: 36px;
-  height: 46px;
+  min-width: 0;
+  max-width: 48px;
+  height: 52px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--tc, var(--border));
   border-radius: 6px;
-  background: var(--surface);
+  background: var(--tb, var(--surface, #ffffff));
   color: var(--text-1);
   font: inherit;
+  cursor: pointer;
+}
+.tooth[data-s="О"] {
+  border-style: dashed;
+  color: var(--text-3);
 }
 .tooth small {
   font-size: 10px;
@@ -2197,56 +2671,80 @@ select.input {
   font-weight: 700;
   line-height: 1.3;
 }
-button.tooth {
-  cursor: pointer;
-}
-button.tooth:focus-visible {
+.tooth:focus-visible {
   outline: 2px solid var(--primary-600);
   outline-offset: 2px;
 }
-.tooth[data-s="К"] {
-  background: color-mix(in srgb, var(--warning) 20%, white);
-  border-color: var(--warning);
-}
-.tooth[data-s="П"] {
-  background: var(--primary-50);
-  border-color: var(--primary-600);
-}
-.tooth[data-s="Пт"] {
-  background: color-mix(in srgb, var(--emergency) 12%, white);
-  border-color: var(--emergency);
-}
-.tooth[data-s="Р"] {
-  background: color-mix(in srgb, var(--warning) 12%, white);
-  border-color: var(--text-3);
-}
-.tooth[data-s="И"],
-.tooth[data-s="Имп"] {
-  background: color-mix(in srgb, var(--accent-blue) 12%, white);
-  border-color: var(--accent-blue);
-}
-.tooth[data-s="О"] {
-  background: var(--muted-bg);
-  border-style: dashed;
-  color: var(--text-3);
+.tooth.is-selected {
+  outline: 2px solid var(--primary-600);
+  outline-offset: 1px;
 }
 @media (hover: hover) {
-  button.tooth:hover {
+  .tooth:hover {
     border-color: var(--primary-600);
   }
 }
+@media (pointer: coarse) {
+  .tooth {
+    height: 56px;
+  }
+}
+.teeth__caption {
+  min-height: 20px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* Узкая карта (телефон, узкое окно): квадранты друг под другом, по 8 зубов в ряд */
+@container (max-width: 480px) {
+  .teeth__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .quad:nth-child(n) {
+    padding: 0;
+    border: 0;
+  }
+  .quad:nth-child(odd) .quad__cap {
+    text-align: left;
+  }
+  .quad:nth-child(odd) .quad__row {
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 560px) {
+  /* то же для браузеров без container queries */
+  .teeth__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .quad:nth-child(n) {
+    padding: 0;
+    border: 0;
+  }
+  .quad:nth-child(odd) .quad__cap {
+    text-align: left;
+  }
+  .quad:nth-child(odd) .quad__row {
+    justify-content: flex-start;
+  }
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
+  gap: 8px 16px;
   margin: 12px 0 0;
   padding: 0;
   list-style: none;
   font-size: 12px;
-  color: var(--text-3);
+  color: var(--text-2);
 }
-.legend b {
-  color: var(--text-1);
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Кнопка выбора даты */
@@ -2286,7 +2784,8 @@ button.tooth:focus-visible {
   overscroll-behavior: contain;
   padding: 18px;
   border-radius: 14px;
-  background: var(--surface);
+  background-color: #ffffff;
+  background: var(--surface, #ffffff);
   box-shadow: 0 16px 48px rgba(15, 23, 42, 0.3);
   outline: none;
 }
@@ -2298,6 +2797,7 @@ button.tooth:focus-visible {
 }
 .dp__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -2324,7 +2824,7 @@ button.tooth:focus-visible {
   appearance: none;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background-color: var(--surface);
+  background-color: var(--surface, #ffffff);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5 7.5 5 5 5-5' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 6px center;
@@ -2378,7 +2878,7 @@ button.tooth:focus-visible {
 }
 @media (hover: hover) {
   .dp__day:hover:not(:disabled):not(.is-selected) {
-    background: var(--primary-50);
+    background: var(--primary-50, #f0fdfa);
   }
 }
 .dp__day.is-outside {
@@ -2457,10 +2957,34 @@ button.tooth:focus-visible {
   height: 22px;
   padding: 0 7px;
   border-radius: 999px;
-  background: var(--muted-bg);
+  background: var(--muted-bg, #f1f5f9);
   font-size: 12px;
   font-weight: 600;
   color: var(--text-2);
+}
+
+/* Пары коротких полей остаются в две колонки даже на телефоне */
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* Пары коротких полей на телефоне: меньше промежуток */
+@media (max-width: 560px) {
+  .pair {
+    gap: 12px;
+  }
+}
+
+/* Очень узкие экраны */
+@media (max-width: 360px) {
+  .card {
+    padding: 16px;
+  }
+  .seg button {
+    padding: 0 10px;
+  }
 }
 
 /* ===== Телефоны ===== */

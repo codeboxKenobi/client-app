@@ -9,7 +9,7 @@ const routes = [
     component: HomeView,
   },
   {
-    // основной макет: боковое меню + router-view для вложенных страниц
+    // основной макет: боковое меню + router-view
     path: "/dashboard",
     component: () =>
       import(/* webpackChunkName: "dashboard" */ "../views/DashboardView.vue"),

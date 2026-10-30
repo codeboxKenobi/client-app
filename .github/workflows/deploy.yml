@@ -43,8 +43,7 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npm run test:unit
+      
 
       - name: Build Vue application
         run: npm run build

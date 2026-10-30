@@ -42,6 +42,24 @@ const VITA = [
   "D4",
 ];
 
+// Справочник услуг: название и цена по умолчанию
+const SERVICE_CATALOG = [
+  { name: "Консультация, осмотр", price: 800 },
+  { name: "Профессиональная гигиена", price: 4500 },
+  { name: "Лечение кариеса", price: 5500 },
+  { name: "Лечение пульпита", price: 9000 },
+  { name: "Установка пломбы", price: 4000 },
+  { name: "Удаление зуба", price: 3000 },
+  { name: "Установка импланта", price: 45000 },
+  { name: "Коронка металлокерамическая", price: 15000 },
+];
+const moneyFmt = new Intl.NumberFormat("ru-RU", {
+  style: "currency",
+  currency: "RUB",
+  maximumFractionDigits: 0,
+});
+const money = (n) => moneyFmt.format(Number(n) || 0);
+
 // Условные обозначения зубной формулы (упрощённый набор); пустое значение — здоровый зуб
 const TEETH_STATUSES = [
   { code: "К", label: "Кариес" },
@@ -120,6 +138,25 @@ const props = defineProps({
         vitaShade: "A2",
         lastVisit: "2026-09-28",
         teeth: { 16: "П", 26: "К", 36: "П", 38: "О", 48: "О" },
+        services: [
+          {
+            id: "s1",
+            date: "2026-09-28",
+            name: "Консультация, осмотр",
+            teeth: [],
+            price: 800,
+            qty: 1,
+          },
+          {
+            id: "s2",
+            date: "2026-09-28",
+            name: "Лечение кариеса",
+            teeth: ["26"],
+            price: 5500,
+            qty: 1,
+          },
+        ],
+        discount: { type: "percent", value: 10 },
       },
       {
         id: "p2",
@@ -151,6 +188,7 @@ const props = defineProps({
         vitaShade: "A3",
         lastVisit: "2026-10-05",
         teeth: { 17: "И", 16: "И", 25: "П", 46: "Имп", 47: "О", 48: "О" },
+        services: [],
       },
       {
         id: "p3",
@@ -182,6 +220,7 @@ const props = defineProps({
         vitaShade: "B1",
         lastVisit: "",
         teeth: {},
+        services: [],
       },
     ],
   },
@@ -190,12 +229,38 @@ const props = defineProps({
 // Поддерживает v-model:patients, а также события add / edit / remove
 const emit = defineEmits(["update:patients", "add", "edit", "remove"]);
 
+// Зубы услуги: массив номеров; старое поле tooth ("26, 27") переносим сюда
+const serviceTeeth = (s) =>
+  Array.isArray(s.teeth)
+    ? [...s.teeth]
+    : s.tooth
+    ? String(s.tooth)
+        .split(/\s*,\s*/)
+        .filter(Boolean)
+    : [];
+
+// Глубокая копия пациента: зубы, услуги и скидка не должны делить ссылки с родителем
+const clonePatient = (p) => ({
+  ...p,
+  teeth: { ...(p.teeth ?? {}) },
+  services: (p.services ?? []).map((s) => {
+    const { ...rest } = s;
+    return { ...rest, teeth: serviceTeeth(s) };
+  }),
+  discount: p.discount ? { ...p.discount } : null,
+});
+const emitPatients = () =>
+  emit(
+    "update:patients",
+    items.value.map((p) => clonePatient(p))
+  );
+
 // Локальная копия: компонент работает и без v-model у родителя
 const items = ref([]);
 watch(
   () => props.patients,
   (v) => {
-    items.value = v.map((p) => ({ ...p, teeth: { ...(p.teeth ?? {}) } }));
+    items.value = v.map((p) => clonePatient(p));
   },
   { immediate: true, deep: true }
 );
@@ -372,12 +437,16 @@ const isChild = (p) =>
   !!p?.birthDate && parseInt(ageLabel(p.birthDate), 10) < 12;
 
 // детям сразу показываем молочные зубы
-watch(detailTarget, (p) => {
-  if (p) {
-    teethSet.value = isChild(p) ? "milk" : "perm";
-    selectedTooth.value = null;
+watch(
+  () => detailTarget.value?.id,
+  () => {
+    const p = detailTarget.value;
+    if (p) {
+      teethSet.value = isChild(p) ? "milk" : "perm";
+      selectedTooth.value = null;
+    }
   }
-});
+);
 
 function teethCounts(teeth) {
   const c = {};
@@ -500,6 +569,7 @@ function openEdit(p) {
     phone: formatPhone(p.phone),
     teeth: { ...(p.teeth ?? {}) },
   });
+  delete form.services; // услуги редактируются отдельно, в окне «Подробнее»
   clearErrors();
   detailTarget.value = null;
   teethSet.value = isChild(p) ? "milk" : "perm";
@@ -578,6 +648,7 @@ function save() {
       cardNumber: nextCardNumber(),
       createdAt: todayKey,
       lastVisit: "",
+      services: [],
       ...data,
     };
     items.value.push(created);
@@ -585,14 +656,12 @@ function save() {
   } else {
     const i = items.value.findIndex((s) => s.id === editingId.value);
     if (i !== -1) {
+      // services не входят в форму и остаются как были
       items.value[i] = { ...items.value[i], ...data };
       emit("edit", items.value[i]);
     }
   }
-  emit(
-    "update:patients",
-    items.value.map((p) => ({ ...p, teeth: { ...p.teeth } }))
-  );
+  emitPatients();
   closeModal();
 }
 
@@ -600,11 +669,206 @@ function confirmDelete() {
   const removed = deleteTarget.value;
   items.value = items.value.filter((s) => s.id !== removed.id);
   emit("remove", removed);
-  emit(
-    "update:patients",
-    items.value.map((p) => ({ ...p, teeth: { ...p.teeth } }))
-  );
+  emitPatients();
   deleteTarget.value = null;
+}
+
+/* ---------- Услуги ---------- */
+const svc = reactive({ open: false, editingId: null });
+const svcForm = reactive({
+  date: "",
+  name: "",
+  teeth: [],
+  price: "",
+  qty: "1",
+});
+const svcErrors = reactive({});
+const svcDelete = ref(null);
+const svcTeethSet = ref("perm"); // какой набор зубов показан в окне услуги
+
+const round2 = (n) => Math.round(n * 100) / 100;
+const sortedServices = (p) =>
+  [...(p.services ?? [])].sort((a, b) => b.date.localeCompare(a.date));
+const servicesTotal = (p) =>
+  round2((p.services ?? []).reduce((s, x) => s + x.price * x.qty, 0));
+
+// Скидка на весь чек: процент или фиксированная сумма
+const discountAmount = (p) => {
+  const d = p.discount;
+  const sub = servicesTotal(p);
+  if (!d || !(d.value > 0)) return 0;
+  const raw = d.type === "percent" ? (sub * d.value) / 100 : d.value;
+  return round2(Math.min(sub, raw));
+};
+const payTotal = (p) => round2(servicesTotal(p) - discountAmount(p));
+const discountLabel = (p) =>
+  p.discount?.type === "percent"
+    ? `Скидка ${String(p.discount.value).replace(".", ",")}%`
+    : "Скидка";
+
+function clearSvcErrors() {
+  Object.keys(svcErrors).forEach((k) => delete svcErrors[k]);
+}
+
+// Обновляем пациента в списке и в открытом окне «Подробнее»
+function commitPatient(id, patch) {
+  const i = items.value.findIndex((x) => x.id === id);
+  if (i === -1) return;
+  items.value[i] = { ...items.value[i], ...patch };
+  if (detailTarget.value?.id === id) detailTarget.value = items.value[i];
+  emit("edit", items.value[i]);
+  emitPatients();
+}
+
+function openServiceCreate() {
+  svc.editingId = null;
+  Object.assign(svcForm, {
+    date: todayKey,
+    name: "",
+    teeth: [],
+    price: "",
+    qty: "1",
+  });
+  svcTeethSet.value = isChild(detailTarget.value) ? "milk" : "perm";
+  clearSvcErrors();
+  svc.open = true;
+}
+function openServiceEdit(s) {
+  svc.editingId = s.id;
+  Object.assign(svcForm, {
+    date: s.date,
+    name: s.name,
+    teeth: [...(s.teeth ?? [])],
+    price: String(s.price),
+    qty: String(s.qty),
+  });
+  // молочные зубы нумеруются с 51
+  svcTeethSet.value = svcForm.teeth.some((n) => Number(n) >= 51)
+    ? "milk"
+    : isChild(detailTarget.value)
+    ? "milk"
+    : "perm";
+  clearSvcErrors();
+  svc.open = true;
+}
+function closeService() {
+  svc.open = false;
+  nextTick(() => detailEl.value?.focus({ preventScroll: true }));
+}
+// Выбор зубов услуги на зубной карте: нажатие отмечает зуб, повторное снимает
+function toggleSvcTooth(n) {
+  const k = String(n);
+  const i = svcForm.teeth.indexOf(k);
+  if (i === -1) svcForm.teeth.push(k);
+  else svcForm.teeth.splice(i, 1);
+  svcForm.teeth.sort((a, b) => Number(a) - Number(b));
+}
+// Выбрали услугу из справочника — подставляем цену, если она ещё не введена
+function onServiceName() {
+  delete svcErrors.name;
+  const hit = SERVICE_CATALOG.find((c) => c.name === svcForm.name.trim());
+  if (hit && !svcForm.price) svcForm.price = String(hit.price);
+}
+function validateService() {
+  clearSvcErrors();
+  if (!svcForm.date) svcErrors.date = "Укажите дату";
+  else if (svcForm.date > todayKey)
+    svcErrors.date = "Дата не может быть в будущем";
+  if (!svcForm.name.trim()) svcErrors.name = "Введите название услуги";
+  const price = Number(String(svcForm.price).replace(",", "."));
+  if (svcForm.price === "" || !Number.isFinite(price) || price < 0)
+    svcErrors.price = "Введите цену";
+  const qty = Number(svcForm.qty);
+  if (!Number.isInteger(qty) || qty < 1) svcErrors.qty = "Минимум 1";
+  return Object.keys(svcErrors).length === 0;
+}
+function saveService() {
+  const p = detailTarget.value;
+  if (!p || !validateService()) return;
+  const data = {
+    date: svcForm.date,
+    name: svcForm.name.trim(),
+    teeth: [...svcForm.teeth],
+    price: Number(String(svcForm.price).replace(",", ".")),
+    qty: Number(svcForm.qty),
+  };
+  const list = (p.services ?? []).map((s) => ({ ...s }));
+  if (svc.editingId === null) {
+    list.push({ id: `s${Date.now().toString(36)}`, ...data });
+  } else {
+    const i = list.findIndex((s) => s.id === svc.editingId);
+    if (i !== -1) list[i] = { ...list[i], ...data };
+  }
+  commitPatient(p.id, { services: list });
+  closeService();
+}
+function confirmServiceDelete() {
+  const p = detailTarget.value;
+  if (p && svcDelete.value) {
+    commitPatient(p.id, {
+      services: (p.services ?? []).filter((s) => s.id !== svcDelete.value.id),
+    });
+  }
+  svcDelete.value = null;
+}
+
+/* ---------- Скидка на чек ---------- */
+const disc = reactive({ open: false });
+const discForm = reactive({ type: "percent", value: "" });
+const discError = ref("");
+const discValue = () => Number(String(discForm.value).replace(",", "."));
+
+// Сколько останется к оплате — показываем, пока человек вводит скидку
+const discPreview = computed(() => {
+  const p = detailTarget.value;
+  if (!disc.open || !p) return "";
+  const v = discValue();
+  const sub = servicesTotal(p);
+  if (!Number.isFinite(v) || v <= 0) return "";
+  if (discForm.type === "percent" ? v > 100 : v > sub) return "";
+  const a = discForm.type === "percent" ? (sub * v) / 100 : v;
+  return money(round2(sub - a));
+});
+
+function openDiscount() {
+  const d = detailTarget.value?.discount;
+  discForm.type = d?.type ?? "percent";
+  discForm.value = d ? String(d.value).replace(".", ",") : "";
+  discError.value = "";
+  disc.open = true;
+}
+function closeDiscount() {
+  disc.open = false;
+  nextTick(() => detailEl.value?.focus({ preventScroll: true }));
+}
+function setDiscType(t) {
+  discForm.type = t;
+  discError.value = "";
+}
+function saveDiscount() {
+  const p = detailTarget.value;
+  if (!p) return;
+  const v = discValue();
+  const sub = servicesTotal(p);
+  if (String(discForm.value).trim() === "" || !Number.isFinite(v) || v <= 0) {
+    discError.value = "Введите значение больше нуля";
+    return;
+  }
+  if (discForm.type === "percent" && v > 100) {
+    discError.value = "Не больше 100%";
+    return;
+  }
+  if (discForm.type === "amount" && v > sub) {
+    discError.value = `Не больше суммы услуг: ${money(sub)}`;
+    return;
+  }
+  commitPatient(p.id, { discount: { type: discForm.type, value: v } });
+  closeDiscount();
+}
+function removeDiscount() {
+  const p = detailTarget.value;
+  if (p) commitPatient(p.id, { discount: null });
+  closeDiscount();
 }
 
 /* ---------- Выбор даты ---------- */
@@ -741,7 +1005,15 @@ function onDetailKeydown(e) {
 /* ---------- Пока открыто окно, страница под ним не прокручивается ---------- */
 const anyOpen = computed(
   () =>
-    !!(detailTarget.value || modalOpen.value || deleteTarget.value || dp.open)
+    !!(
+      detailTarget.value ||
+      modalOpen.value ||
+      deleteTarget.value ||
+      dp.open ||
+      svc.open ||
+      disc.open ||
+      svcDelete.value
+    )
 );
 let prevBodyOverflow = "";
 watch(anyOpen, (open) => {
@@ -761,6 +1033,9 @@ onBeforeUnmount(() => {
 function onKeydown(e) {
   if (e.key !== "Escape") return;
   if (dp.open) closeDatePicker();
+  else if (svcDelete.value) svcDelete.value = null;
+  else if (disc.open) closeDiscount();
+  else if (svc.open) closeService();
   else if (deleteTarget.value) deleteTarget.value = null;
   else if (modalOpen.value) closeModal();
   else if (detailTarget.value) closeDetails();
@@ -1091,6 +1366,117 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
               <li><i>·</i> Здоров</li>
             </ul>
           </section>
+
+          <!-- Услуги -->
+          <section class="dsec">
+            <div class="dsec__bar">
+              <h3 class="dsec__title">Услуги</h3>
+              <button
+                class="btn btn--primary btn--sm"
+                type="button"
+                @click="openServiceCreate"
+              >
+                Добавить услугу
+              </button>
+            </div>
+
+            <p v-if="!detailTarget.services?.length" class="helper">
+              Услуги ещё не добавлены.
+            </p>
+            <template v-else>
+              <ul class="services">
+                <li
+                  v-for="s in sortedServices(detailTarget)"
+                  :key="s.id"
+                  class="service"
+                >
+                  <div class="service__main">
+                    <strong>{{ s.name }}</strong>
+                    <span class="service__meta">
+                      {{ fmt(s.date)
+                      }}<template v-if="s.teeth?.length">
+                        · {{ s.teeth.length > 1 ? "зубы" : "зуб" }}
+                        {{ s.teeth.join(", ") }}</template
+                      ><template v-if="s.qty > 1"> · {{ s.qty }} шт.</template>
+                    </span>
+                  </div>
+                  <span class="service__sum">{{ money(s.price * s.qty) }}</span>
+                  <button
+                    class="btn btn--icon"
+                    type="button"
+                    :aria-label="`Редактировать услугу: ${s.name}`"
+                    @click="openServiceEdit(s)"
+                  >
+                    <svg
+                      viewBox="0 0 20 20"
+                      width="18"
+                      height="18"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M4 16h3l8-8-3-3-8 8zM11 6l3 3"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    class="btn btn--icon"
+                    type="button"
+                    :aria-label="`Удалить услугу: ${s.name}`"
+                    @click="svcDelete = s"
+                  >
+                    <svg
+                      viewBox="0 0 20 20"
+                      width="18"
+                      height="18"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 9.5h6.6L14 6"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </li>
+              </ul>
+              <div class="bill">
+                <div class="bill__row">
+                  <span>Сумма услуг</span>
+                  <span>{{ money(servicesTotal(detailTarget)) }}</span>
+                </div>
+                <div
+                  v-if="discountAmount(detailTarget)"
+                  class="bill__row bill__row--disc"
+                >
+                  <span>{{ discountLabel(detailTarget) }}</span>
+                  <span>−{{ money(discountAmount(detailTarget)) }}</span>
+                </div>
+                <div class="bill__row bill__row--total">
+                  <span>К оплате</span>
+                  <strong>{{ money(payTotal(detailTarget)) }}</strong>
+                </div>
+                <button
+                  class="btn btn--ghost btn--sm bill__btn"
+                  type="button"
+                  @click="openDiscount"
+                >
+                  {{
+                    detailTarget.discount
+                      ? "Изменить скидку"
+                      : "Добавить скидку"
+                  }}
+                </button>
+              </div>
+            </template>
+          </section>
         </div>
 
         <footer class="detail__foot">
@@ -1106,6 +1492,284 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
           </button>
         </footer>
       </div>
+    </div>
+
+    <!-- Услуга: добавление / редактирование (поверх окна «Подробнее») -->
+    <div v-if="svc.open" class="overlay" @mousedown.self="closeService">
+      <form
+        class="modal modal--service"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="svc-title"
+        novalidate
+        @submit.prevent="saveService"
+      >
+        <h2 id="svc-title">
+          {{
+            svc.editingId === null ? "Новая услуга" : "Редактирование услуги"
+          }}
+        </h2>
+
+        <label class="field field--full">
+          <span>Услуга</span>
+          <input
+            v-model="svcForm.name"
+            class="input"
+            :class="{ 'input--error': svcErrors.name }"
+            type="text"
+            list="service-catalog"
+            maxlength="120"
+            autocomplete="off"
+            placeholder="Выберите из списка или введите свою"
+            autofocus
+            @input="onServiceName"
+          />
+          <datalist id="service-catalog">
+            <option
+              v-for="c in SERVICE_CATALOG"
+              :key="c.name"
+              :value="c.name"
+            />
+          </datalist>
+          <small v-if="svcErrors.name" class="error">{{
+            svcErrors.name
+          }}</small>
+        </label>
+
+        <div class="trio field--full">
+          <label class="field">
+            <span>Дата</span>
+            <input
+              v-model="svcForm.date"
+              class="input"
+              :class="{ 'input--error': svcErrors.date }"
+              type="date"
+              :max="todayKey"
+              @input="delete svcErrors.date"
+            />
+            <small v-if="svcErrors.date" class="error">{{
+              svcErrors.date
+            }}</small>
+          </label>
+
+          <label class="field">
+            <span>Цена, ₽</span>
+            <input
+              v-model="svcForm.price"
+              class="input"
+              :class="{ 'input--error': svcErrors.price }"
+              type="text"
+              inputmode="decimal"
+              maxlength="9"
+              placeholder="0"
+              autocomplete="off"
+              @input="delete svcErrors.price"
+            />
+            <small v-if="svcErrors.price" class="error">{{
+              svcErrors.price
+            }}</small>
+          </label>
+
+          <label class="field">
+            <span>Количество</span>
+            <input
+              v-model="svcForm.qty"
+              class="input"
+              :class="{ 'input--error': svcErrors.qty }"
+              type="text"
+              inputmode="numeric"
+              maxlength="3"
+              autocomplete="off"
+              @input="delete svcErrors.qty"
+            />
+            <small v-if="svcErrors.qty" class="error">{{
+              svcErrors.qty
+            }}</small>
+          </label>
+        </div>
+
+        <!-- Зубная карта: выбор зубов, к которым относится услуга -->
+        <div class="field--full teeth svc-teeth">
+          <div class="teeth__bar">
+            <span class="svc-teeth__title">Зубы (необязательно)</span>
+            <div class="seg" role="group" aria-label="Тип зубов">
+              <button
+                v-for="t in TEETH_SETS"
+                :key="t.id"
+                type="button"
+                :aria-pressed="svcTeethSet === t.id ? 'true' : 'false'"
+                @click="svcTeethSet = t.id"
+              >
+                {{ t.label }}
+              </button>
+            </div>
+          </div>
+          <p class="helper">
+            Нажимайте на зубы, чтобы отметить их. Цвет показывает текущее
+            состояние зуба в формуле пациента.
+          </p>
+
+          <div class="teeth__grid">
+            <div
+              v-for="q in TEETH_SETS.find((t) => t.id === svcTeethSet).quads"
+              :key="q.id"
+              class="quad"
+            >
+              <span class="quad__cap">{{ q.label }}</span>
+              <div class="quad__row">
+                <button
+                  v-for="n in q.teeth"
+                  :key="n"
+                  type="button"
+                  class="tooth"
+                  :class="{ 'is-picked': svcForm.teeth.includes(String(n)) }"
+                  :data-s="detailTarget?.teeth?.[n] || ''"
+                  :aria-label="`Зуб ${n}: ${toothLabel(
+                    detailTarget?.teeth?.[n]
+                  )}`"
+                  :aria-pressed="
+                    svcForm.teeth.includes(String(n)) ? 'true' : 'false'
+                  "
+                  @click="toggleSvcTooth(n)"
+                >
+                  <small>{{ n }}</small>
+                  <span>{{ detailTarget?.teeth?.[n] || "·" }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="svc-teeth__foot">
+            <p class="teeth__caption" aria-live="polite">
+              {{
+                svcForm.teeth.length
+                  ? `Выбрано: ${svcForm.teeth.join(", ")}`
+                  : "Зубы не выбраны"
+              }}
+            </p>
+            <button
+              type="button"
+              class="btn btn--ghost btn--sm"
+              :disabled="!svcForm.teeth.length"
+              @click="svcForm.teeth.splice(0)"
+            >
+              Снять выбор
+            </button>
+          </div>
+        </div>
+
+        <div class="modal__footer field--full">
+          <button type="button" class="btn btn--ghost" @click="closeService">
+            Отмена
+          </button>
+          <button type="submit" class="btn btn--primary">Сохранить</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Услуга: подтверждение удаления -->
+    <div v-if="svcDelete" class="overlay" @mousedown.self="svcDelete = null">
+      <div
+        class="modal modal--small"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Удаление услуги"
+      >
+        <h2>Удалить услугу?</h2>
+        <p class="muted field--full">
+          «{{ svcDelete.name }}» будет удалена из карты пациента.
+        </p>
+        <div class="modal__footer field--full">
+          <button
+            class="btn btn--ghost"
+            type="button"
+            @click="svcDelete = null"
+          >
+            Отмена
+          </button>
+          <button
+            class="btn btn--emergency"
+            type="button"
+            @click="confirmServiceDelete"
+          >
+            Удалить
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Скидка на общий чек -->
+    <div v-if="disc.open" class="overlay" @mousedown.self="closeDiscount">
+      <form
+        class="modal modal--small"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="disc-title"
+        novalidate
+        @submit.prevent="saveDiscount"
+      >
+        <h2 id="disc-title">Скидка на чек</h2>
+        <p class="muted field--full">
+          Сумма услуг: {{ money(servicesTotal(detailTarget)) }}
+        </p>
+
+        <div class="seg disc__seg" role="group" aria-label="Тип скидки">
+          <button
+            type="button"
+            :aria-pressed="discForm.type === 'percent' ? 'true' : 'false'"
+            @click="setDiscType('percent')"
+          >
+            В процентах
+          </button>
+          <button
+            type="button"
+            :aria-pressed="discForm.type === 'amount' ? 'true' : 'false'"
+            @click="setDiscType('amount')"
+          >
+            В рублях
+          </button>
+        </div>
+
+        <label class="field field--full">
+          <span>{{
+            discForm.type === "percent"
+              ? "Размер скидки, %"
+              : "Размер скидки, ₽"
+          }}</span>
+          <input
+            v-model="discForm.value"
+            class="input"
+            :class="{ 'input--error': discError }"
+            type="text"
+            inputmode="decimal"
+            maxlength="9"
+            autocomplete="off"
+            placeholder="0"
+            autofocus
+            @input="discError = ''"
+          />
+          <small v-if="discError" class="error">{{ discError }}</small>
+        </label>
+
+        <p v-if="discPreview" class="helper disc__preview">
+          К оплате будет: <strong>{{ discPreview }}</strong>
+        </p>
+
+        <div class="modal__footer field--full">
+          <button
+            v-if="detailTarget?.discount"
+            type="button"
+            class="btn btn--ghost disc__remove"
+            @click="removeDiscount"
+          >
+            Убрать скидку
+          </button>
+          <button type="button" class="btn btn--ghost" @click="closeDiscount">
+            Отмена
+          </button>
+          <button type="submit" class="btn btn--primary">Применить</button>
+        </div>
+      </form>
     </div>
 
     <!-- Создание / редактирование -->
@@ -2245,6 +2909,9 @@ select.input {
   max-width: 420px;
   grid-template-columns: 1fr;
 }
+.modal--service {
+  max-width: 720px;
+}
 .modal h2 {
   grid-column: 1 / -1;
   font-size: 20px;
@@ -2745,6 +3412,159 @@ select.input {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+/* Услуги */
+.dsec__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dsec__bar .dsec__title {
+  margin-bottom: 0;
+}
+.services {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.service {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px 10px 12px;
+}
+.service + .service {
+  border-top: 1px solid var(--border);
+}
+.service__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.service__meta {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.service__sum {
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+.service .btn--icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+}
+/* Итог по услугам: сумма, скидка, к оплате */
+.bill {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted-bg, #f1f5f9);
+  font-size: 14px;
+  color: var(--text-2);
+}
+.bill__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.bill__row--disc {
+  color: var(--primary-700);
+  font-weight: 600;
+}
+.bill__row--total {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 16px;
+  color: var(--text-1);
+}
+.bill__row--total strong {
+  font-weight: 700;
+}
+.bill__btn {
+  align-self: flex-end;
+  margin-top: 4px;
+}
+
+/* Окно скидки */
+.disc__seg {
+  display: flex;
+  width: 100%;
+}
+.disc__seg button {
+  flex: 1;
+}
+.disc__preview {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 13px;
+}
+.disc__preview strong {
+  color: var(--text-1);
+}
+.disc__remove {
+  margin-right: auto;
+  color: var(--error);
+}
+
+/* Три поля в ряд: дата, цена, количество */
+.trio {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 560px) {
+  .trio {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+
+/* Зубная карта в окне услуги */
+.svc-teeth__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.svc-teeth__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.svc-teeth__foot .teeth__caption {
+  margin: 0;
+}
+.tooth.is-picked {
+  background: var(--primary-600);
+  border-color: var(--primary-600);
+  color: #fff;
+}
+.tooth.is-picked small {
+  color: rgba(255, 255, 255, 0.85);
+}
+.modal--service .input[type="date"] {
+  min-height: 44px;
 }
 
 /* Кнопка выбора даты */

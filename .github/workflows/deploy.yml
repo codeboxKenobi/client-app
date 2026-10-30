@@ -3,11 +3,11 @@ name: Vue 3 CI/CD
 on:
   push:
     branches:
-      - master
+      - master_teleport
 
   pull_request:
     branches:
-      - master
+      - master_teleport
 
   workflow_dispatch:
 
